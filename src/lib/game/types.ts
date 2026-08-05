@@ -1,0 +1,208 @@
+/** Elemental affinity shared by towers and enemy armor. */
+export type Element = "ember" | "frost" | "volt" | "iron";
+
+export type TowerKind = Element;
+
+export type EnemyKind =
+  | "scout"
+  | "brute"
+  | "runner"
+  | "shield"
+  | "hexer"
+  | "boss";
+
+/** Temporary combat modifiers on attackers. */
+export type BuffId = "fortify" | "haste" | "ward" | "frail" | "expose" | "regen";
+
+export interface BuffDef {
+  id: BuffId;
+  name: string;
+  /** Positive = helpful for enemy; negative = debuff. */
+  polarity: "strength" | "weakness";
+  description: string;
+  duration: number;
+  /** Damage taken multiplier while active. */
+  damageTakenMul?: number;
+  /** Move speed multiplier. */
+  speedMul?: number;
+  /** Extra resistance to listed elements. */
+  resistElements?: Element[];
+  resistMul?: number;
+  /** Extra vulnerability to listed elements. */
+  weakElements?: Element[];
+  weakMul?: number;
+  regenPerSec?: number;
+}
+
+export interface TowerDef {
+  kind: TowerKind;
+  name: string;
+  short: string;
+  description: string;
+  color: string;
+  colorDim: string;
+  baseCost: number;
+  /** Per-tier stats; index 0 = tier 1. */
+  tiers: TowerTier[];
+}
+
+export interface TowerTier {
+  damage: number;
+  range: number;
+  fireRate: number;
+  projectileSpeed: number;
+  splash: number;
+  slow: number;
+  chain: number;
+  cost: number;
+}
+
+export interface EnemyDef {
+  kind: EnemyKind;
+  name: string;
+  hp: number;
+  speed: number;
+  reward: number;
+  armor: Element;
+  radius: number;
+  color: string;
+  /** Innate strength buff ids (always on). */
+  innateStrength: BuffId[];
+  /** Innate weakness buff ids (always on). */
+  innateWeakness: BuffId[];
+  isBoss?: boolean;
+}
+
+export interface WaveSpawn {
+  kind: EnemyKind;
+  count: number;
+  interval: number;
+  delay: number;
+  /** Optional buff applied on spawn. */
+  spawnBuff?: BuffId;
+  spawnBuffDuration?: number;
+}
+
+export interface WaveDef {
+  name: string;
+  spawns: WaveSpawn[];
+  bonusGold: number;
+}
+
+export interface Vec2 {
+  x: number;
+  y: number;
+}
+
+export interface Tower {
+  id: number;
+  kind: TowerKind;
+  col: number;
+  row: number;
+  x: number;
+  y: number;
+  tier: number;
+  cooldown: number;
+  angle: number;
+  kills: number;
+}
+
+export interface ActiveBuff {
+  id: BuffId;
+  remaining: number;
+  permanent?: boolean;
+}
+
+export interface Enemy {
+  id: number;
+  kind: EnemyKind;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  pathIndex: number;
+  progress: number;
+  speed: number;
+  armor: Element;
+  radius: number;
+  reward: number;
+  alive: boolean;
+  buffs: ActiveBuff[];
+  slowTimer: number;
+  slowMul: number;
+  hitFlash: number;
+  pathT: number;
+}
+
+export interface Projectile {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  damage: number;
+  element: Element;
+  speed: number;
+  targetId: number;
+  splash: number;
+  slow: number;
+  chain: number;
+  chained: number;
+  ttl: number;
+  radius: number;
+  alive: boolean;
+  color: string;
+}
+
+export interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+  color: string;
+  size: number;
+}
+
+export interface FloatingText {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  life: number;
+  maxLife: number;
+  vy: number;
+}
+
+export type GamePhase = "menu" | "playing" | "paused" | "won" | "lost" | "levelclear";
+
+export type PlacementMode = TowerKind | null;
+
+export interface Cell {
+  col: number;
+  row: number;
+  buildable: boolean;
+  path: boolean;
+  occupied: boolean;
+}
+
+export interface GameSnapshot {
+  phase: GamePhase;
+  gold: number;
+  lives: number;
+  /** Campaign level 1–10 */
+  level: number;
+  totalLevels: number;
+  /** Wave index within level 0–9 (display +1) */
+  wave: number;
+  totalWaves: number;
+  waveActive: boolean;
+  enemiesRemaining: number;
+  selectedTowerId: number | null;
+  placement: PlacementMode;
+  score: number;
+  message: string | null;
+  /** Next wave name when idle */
+  nextWaveName: string | null;
+}
