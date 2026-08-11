@@ -94,56 +94,143 @@ export const TOWERS: Record<Element, TowerDef> = {
     kind: "ember",
     name: "Ember Spire",
     short: "Ember",
-    description: "High single-target fire. Strong vs Frost armor.",
+    description: "High single-target fire. Strong vs Frost armor. T3 can Expose targets.",
     color: "#e85d4c",
     colorDim: "#7a2f28",
     baseCost: 55,
     tiers: [
       { damage: 18, range: 110, fireRate: 1.1, projectileSpeed: 320, splash: 0, slow: 0, chain: 0, cost: 55 },
       { damage: 32, range: 125, fireRate: 1.35, projectileSpeed: 360, splash: 0, slow: 0, chain: 0, cost: 70 },
-      { damage: 52, range: 145, fireRate: 1.6, projectileSpeed: 400, splash: 18, slow: 0, chain: 0, cost: 110 },
+      {
+        damage: 52,
+        range: 145,
+        fireRate: 1.6,
+        projectileSpeed: 400,
+        splash: 18,
+        slow: 0,
+        chain: 0,
+        cost: 110,
+        applyBuff: "expose",
+        applyBuffChance: 0.4,
+        applyBuffDuration: 5,
+      },
     ],
   },
   frost: {
     kind: "frost",
     name: "Frost Pillar",
     short: "Frost",
-    description: "Slows targets. Strong vs Volt armor.",
+    description: "Slows targets and can apply Frail at higher tiers. Strong vs Volt armor.",
     color: "#5b9fd4",
     colorDim: "#2a4f6e",
     baseCost: 50,
     tiers: [
       { damage: 10, range: 105, fireRate: 0.95, projectileSpeed: 280, splash: 0, slow: 0.35, chain: 0, cost: 50 },
-      { damage: 16, range: 120, fireRate: 1.1, projectileSpeed: 300, splash: 24, slow: 0.45, chain: 0, cost: 65 },
-      { damage: 26, range: 140, fireRate: 1.25, projectileSpeed: 320, splash: 40, slow: 0.55, chain: 0, cost: 100 },
+      {
+        damage: 16,
+        range: 120,
+        fireRate: 1.1,
+        projectileSpeed: 300,
+        splash: 24,
+        slow: 0.45,
+        chain: 0,
+        cost: 65,
+        applyBuff: "frail",
+        applyBuffChance: 0.35,
+        applyBuffDuration: 5,
+      },
+      {
+        damage: 26,
+        range: 140,
+        fireRate: 1.25,
+        projectileSpeed: 320,
+        splash: 40,
+        slow: 0.55,
+        chain: 0,
+        cost: 100,
+        applyBuff: "frail",
+        applyBuffChance: 0.65,
+        applyBuffDuration: 7,
+      },
     ],
   },
   volt: {
     kind: "volt",
     name: "Volt Node",
     short: "Volt",
-    description: "Chains lightning. Strong vs Ember & Iron.",
+    description: "Chains lightning that can Expose. Strong vs Ember & Iron.",
     color: "#c9b44a",
     colorDim: "#6a5c22",
     baseCost: 65,
     tiers: [
       { damage: 14, range: 100, fireRate: 0.85, projectileSpeed: 420, splash: 0, slow: 0, chain: 1, cost: 65 },
-      { damage: 22, range: 115, fireRate: 1.0, projectileSpeed: 460, splash: 0, slow: 0, chain: 2, cost: 85 },
-      { damage: 34, range: 130, fireRate: 1.15, projectileSpeed: 500, splash: 0, slow: 0, chain: 3, cost: 125 },
+      {
+        damage: 22,
+        range: 115,
+        fireRate: 1.0,
+        projectileSpeed: 460,
+        splash: 0,
+        slow: 0,
+        chain: 2,
+        cost: 85,
+        chainBuff: "expose",
+        chainBuffChance: 0.75,
+        chainBuffDuration: 5,
+      },
+      {
+        damage: 34,
+        range: 130,
+        fireRate: 1.15,
+        projectileSpeed: 500,
+        splash: 0,
+        slow: 0,
+        chain: 3,
+        cost: 125,
+        applyBuff: "expose",
+        applyBuffChance: 0.3,
+        applyBuffDuration: 4,
+        chainBuff: "expose",
+        chainBuffChance: 1.0,
+        chainBuffDuration: 6,
+      },
     ],
   },
   iron: {
     kind: "iron",
     name: "Iron Bastion",
     short: "Iron",
-    description: "Splash shells. Reliable vs all, weak vs Iron armor.",
+    description: "Splash shells that can Frail. Reliable vs all, weak vs Iron armor.",
     color: "#8b95a8",
     colorDim: "#3d4452",
     baseCost: 60,
     tiers: [
       { damage: 12, range: 95, fireRate: 0.75, projectileSpeed: 260, splash: 42, slow: 0, chain: 0, cost: 60 },
-      { damage: 20, range: 110, fireRate: 0.9, projectileSpeed: 280, splash: 55, slow: 0, chain: 0, cost: 80 },
-      { damage: 34, range: 125, fireRate: 1.05, projectileSpeed: 300, splash: 70, slow: 0, chain: 0, cost: 120 },
+      {
+        damage: 20,
+        range: 110,
+        fireRate: 0.9,
+        projectileSpeed: 280,
+        splash: 55,
+        slow: 0,
+        chain: 0,
+        cost: 80,
+        splashBuff: "frail",
+        splashBuffChance: 0.4,
+        splashBuffDuration: 4,
+      },
+      {
+        damage: 34,
+        range: 125,
+        fireRate: 1.05,
+        projectileSpeed: 300,
+        splash: 70,
+        slow: 0,
+        chain: 0,
+        cost: 120,
+        splashBuff: "frail",
+        splashBuffChance: 0.65,
+        splashBuffDuration: 6,
+      },
     ],
   },
 };
@@ -330,22 +417,39 @@ export interface LevelScale {
 }
 
 /**
- * Fully exponential difficulty per level (t = level-1).
- * L1 = 1× · L5 ≈ 6–10× HP · L10 ≈ 50×+ HP with denser, buffed packs.
+ * Difficulty scale per campaign level (t = level-1).
+ * L1–6: exponential HP/count growth (hpMul = 1.58^t).
+ * L7–10: softer curve from the L6 base so late levels stay challenging but fair
+ * (~L10 hpMul ≈ 20–25× instead of ~61×).
  */
 export function levelScale(level: number): LevelScale {
   const L = Math.max(1, Math.min(TOTAL_LEVELS, level));
   const t = L - 1;
-  // Exponential growth — always ≥ 1 for combat stats (interval shrinks but stays > 0)
+  // L1–6 exponential; L7+ flatten from L6 base
+  const hpMul =
+    L <= 6
+      ? Math.max(1, Math.pow(1.58, t))
+      : Math.pow(1.58, 5) * Math.pow(1.22, L - 6);
+  const countMul =
+    L <= 6
+      ? Math.max(1, Math.pow(1.28, t))
+      : Math.pow(1.28, 5) * Math.pow(1.12, L - 6);
+  // Speed stays mild throughout; rewards/interval/buff pressure scale with level
   return {
-    hpMul: Math.max(1, Math.pow(1.58, t)),
+    hpMul,
     speedMul: Math.max(1, Math.pow(1.07, t)),
-    countMul: Math.max(1, Math.pow(1.28, t)),
+    countMul,
     rewardMul: Math.max(1, Math.pow(1.32, t)),
     bonusGoldMul: Math.max(1, Math.pow(1.35, t)),
     intervalMul: Math.max(0.22, Math.pow(0.9, t)),
     forceBuffChance: Math.min(0.92, Math.max(0, 1 - Math.pow(0.72, t))),
   };
+}
+
+/** Lives lost when a boss reaches the base. Scouts still cost 1. */
+export function bossLeakCost(level: number): number {
+  // L1–3: 3, L4–6: 4, L7–10: 5
+  return Math.min(5, 3 + Math.floor((Math.max(1, level) - 1) / 3));
 }
 
 const STRENGTH_BUFFS: BuffId[] = ["fortify", "haste", "ward", "regen"];

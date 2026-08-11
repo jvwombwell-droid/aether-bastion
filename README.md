@@ -33,6 +33,10 @@ React 19 · TypeScript · Vite · TanStack Start · Tailwind CSS
 | Space | Start wave / continue level |
 | U | Upgrade selected |
 | X | Sell selected |
+| F | Cycle game speed (1× / 2× / 3×) |
+| T | Cycle selected tower targeting (First / Strong / Close / Last) |
 | Esc | Pause |
+
+Between waves, a **wave preview** shows the upcoming roster (counts, armor, bosses, buffs). Higher-tier towers can apply **debuffs** (Frail, Exposed) on hit — stack them with element matchups.
 
 Built with Grok.

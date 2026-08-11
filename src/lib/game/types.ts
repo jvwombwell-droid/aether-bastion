@@ -55,6 +55,18 @@ export interface TowerTier {
   slow: number;
   chain: number;
   cost: number;
+  /** Debuff applied on primary (direct) hit. */
+  applyBuff?: BuffId;
+  applyBuffChance?: number;
+  applyBuffDuration?: number;
+  /** Debuff applied on splash secondary targets. */
+  splashBuff?: BuffId;
+  splashBuffChance?: number;
+  splashBuffDuration?: number;
+  /** Debuff applied on chain hops (not the first hit). */
+  chainBuff?: BuffId;
+  chainBuffChance?: number;
+  chainBuffDuration?: number;
 }
 
 export interface EnemyDef {
@@ -94,6 +106,20 @@ export interface Vec2 {
   y: number;
 }
 
+/** How a tower picks its next target. */
+export type TargetMode = "first" | "strong" | "close" | "last";
+
+export type GameSpeed = 1 | 2 | 3;
+
+export const TARGET_MODES: TargetMode[] = ["first", "strong", "close", "last"];
+
+export const TARGET_MODE_LABEL: Record<TargetMode, string> = {
+  first: "First",
+  strong: "Strong",
+  close: "Close",
+  last: "Last",
+};
+
 export interface Tower {
   id: number;
   kind: TowerKind;
@@ -105,6 +131,7 @@ export interface Tower {
   cooldown: number;
   angle: number;
   kills: number;
+  targetMode: TargetMode;
 }
 
 export interface ActiveBuff {
@@ -152,6 +179,34 @@ export interface Projectile {
   radius: number;
   alive: boolean;
   color: string;
+  applyBuff?: BuffId;
+  applyBuffChance?: number;
+  applyBuffDuration?: number;
+  splashBuff?: BuffId;
+  splashBuffChance?: number;
+  splashBuffDuration?: number;
+  chainBuff?: BuffId;
+  chainBuffChance?: number;
+  chainBuffDuration?: number;
+}
+
+/** Compact roster line for pre-wave planning UI. */
+export interface WavePreviewSpawn {
+  kind: EnemyKind;
+  name: string;
+  count: number;
+  armor: Element;
+  isBoss?: boolean;
+  buff?: BuffId;
+}
+
+export interface WavePreview {
+  name: string;
+  /** 1-based wave number within the level */
+  waveNumber: number;
+  bonusGold: number;
+  spawns: WavePreviewSpawn[];
+  totalEnemies: number;
 }
 
 export interface Particle {
@@ -205,4 +260,7 @@ export interface GameSnapshot {
   message: string | null;
   /** Next wave name when idle */
   nextWaveName: string | null;
+  /** Full next-wave roster when idle between waves */
+  nextWavePreview: WavePreview | null;
+  gameSpeed: GameSpeed;
 }

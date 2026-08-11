@@ -29,9 +29,18 @@ import {
   WAVES_PER_LEVEL,
   upgradeCost,
 } from "@/lib/game/config";
-import type { Element, GameSnapshot, TowerKind } from "@/lib/game/types";
+import type {
+  Element,
+  GameSnapshot,
+  GameSpeed,
+  TargetMode,
+  TowerKind,
+  WavePreview,
+} from "@/lib/game/types";
+import { TARGET_MODE_LABEL } from "@/lib/game/types";
 
 const TOWER_ORDER: TowerKind[] = ["ember", "frost", "volt", "iron"];
+const SPEED_OPTIONS: GameSpeed[] = [1, 2, 3];
 
 function useAudio() {
   const ctxRef = useRef<AudioContext | null>(null);
@@ -117,7 +126,8 @@ export function TowerDefense() {
       if (dt > 0.1) dt = 0.1;
 
       if (engine.phase === "playing" || engine.phase === "levelclear") {
-        engine.update(dt);
+        const speed = engine.gameSpeed || 1;
+        engine.update(dt * speed);
       }
 
       const { w, h } = sizeRef.current;
@@ -198,6 +208,12 @@ export function TowerDefense() {
         pushSnap();
       } else if (e.key === "x" || e.key === "X") {
         engine.sellSelected();
+        pushSnap();
+      } else if (e.key === "f" || e.key === "F") {
+        engine.cycleGameSpeed();
+        pushSnap();
+      } else if (e.key === "t" || e.key === "T") {
+        engine.cycleSelectedTargetMode();
         pushSnap();
       }
     };
@@ -280,9 +296,24 @@ export function TowerDefense() {
     pushSnap();
   };
 
+  const setSpeed = (speed: GameSpeed) => {
+    engine.setGameSpeed(speed);
+    audio.beep(300 + speed * 60, 0.04, "triangle", 0.03);
+    pushSnap();
+  };
+
+  const cycleTargetMode = () => {
+    engine.cycleSelectedTargetMode();
+    audio.beep(360, 0.04, "triangle", 0.03);
+    pushSnap();
+  };
+
   const upCost = selected ? upgradeCost(selected.kind, selected.tier) : null;
   const waveDisplay =
     snap.wave >= snap.totalWaves ? snap.totalWaves : snap.wave + 1;
+  const gameSpeed: GameSpeed = snap.gameSpeed ?? engine.gameSpeed ?? 1;
+  const nextPreview: WavePreview | null = snap.nextWavePreview ?? null;
+  const selectedTargetMode: TargetMode = selected?.targetMode ?? "first";
 
   return (
     <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-bg pt-[var(--grok-banner-h,0px)] text-fg">
@@ -315,6 +346,35 @@ export function TowerDefense() {
         )}
 
         <div className="flex items-center gap-1">
+          {snap.phase !== "menu" && (
+            <div
+              className="mr-0.5 flex items-center rounded-[var(--radius-sm)] border border-border bg-bg-subtle p-0.5"
+              role="group"
+              aria-label="Game speed"
+            >
+              {SPEED_OPTIONS.map((s) => {
+                const active = gameSpeed === s;
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    aria-label={`Game speed ${s}×`}
+                    aria-pressed={active}
+                    title={`Speed ${s}× (F to cycle)`}
+                    onClick={() => setSpeed(s)}
+                    className={[
+                      "min-h-8 min-w-8 rounded-[calc(var(--radius-sm)-2px)] px-1.5 font-mono text-[11px] font-semibold tabular-nums transition sm:min-h-7 sm:min-w-7",
+                      active
+                        ? "bg-accent text-accent-fg"
+                        : "text-fg-muted hover:bg-bg hover:text-fg",
+                    ].join(" ")}
+                  >
+                    {s}×
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <IconBtn label={muted ? "Unmute" : "Mute"} onClick={() => setMuted((m) => !m)}>
             {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
           </IconBtn>
@@ -398,7 +458,8 @@ export function TowerDefense() {
                   ))}
                 </div>
                 <p className="mt-4 text-[11px] text-fg-subtle">
-                  Keys: 1–4 build · Space wave · U upgrade · X sell · Esc pause
+                  Keys: 1–4 build · Space wave · U upgrade · X sell · F speed · T target · Esc
+                  pause
                 </p>
               </div>
             </Overlay>
@@ -506,10 +567,14 @@ export function TowerDefense() {
               )}
             </div>
             {snap.phase === "playing" && snap.wave < snap.totalWaves && !snap.waveActive && (
-              <p className="hidden px-0.5 text-[11px] text-fg-subtle sm:block">
-                Level {snap.level}/{snap.totalLevels}
-                {snap.nextWaveName ? ` · Next: ${snap.nextWaveName}` : ""}
-              </p>
+              nextPreview ? (
+                <WavePreviewPanel preview={nextPreview} />
+              ) : (
+                <p className="px-0.5 text-[11px] text-fg-subtle">
+                  Level {snap.level}/{snap.totalLevels}
+                  {snap.nextWaveName ? ` · Next: ${snap.nextWaveName}` : ""}
+                </p>
+              )
             )}
 
             <div>
@@ -559,7 +624,8 @@ export function TowerDefense() {
                         {TOWERS[selected.kind].name}
                       </p>
                       <p className="text-xs text-fg-muted">
-                        Tier {selected.tier}/{MAX_TIER} · {selected.kills} kills
+                        Tier {selected.tier}/{MAX_TIER} · {selected.kills} kills ·{" "}
+                        {TARGET_MODE_LABEL[selectedTargetMode]}
                       </p>
                     </div>
                     <span
@@ -578,7 +644,18 @@ export function TowerDefense() {
                       {TOWERS[selected.kind].description}
                     </p>
                   </div>
-                  <div className="mt-2 flex gap-2 sm:mt-3">
+                  <button
+                    type="button"
+                    aria-label={`Cycle targeting mode, currently ${TARGET_MODE_LABEL[selectedTargetMode]}`}
+                    disabled={snap.phase !== "playing" && snap.phase !== "paused"}
+                    onClick={cycleTargetMode}
+                    className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40 sm:mt-2.5"
+                  >
+                    <Crosshair className="size-3.5 text-fg-muted" />
+                    Target: {TARGET_MODE_LABEL[selectedTargetMode]}
+                    <span className="ml-0.5 text-[10px] text-fg-subtle">(T)</span>
+                  </button>
+                  <div className="mt-2 flex gap-2 sm:mt-2.5">
                     <button
                       type="button"
                       disabled={
@@ -780,6 +857,50 @@ function MatchupGrid({ compact }: { compact?: boolean }) {
   );
 }
 
+function WavePreviewPanel({ preview }: { preview: WavePreview }) {
+  return (
+    <div className="rounded-[var(--radius-sm)] border border-border bg-bg px-2 py-1.5 sm:px-2.5 sm:py-2">
+      <div className="mb-1 flex items-baseline justify-between gap-2">
+        <p className="min-w-0 truncate text-[11px] font-semibold text-fg sm:text-xs">
+          Wave {preview.waveNumber}: {preview.name}
+        </p>
+        {preview.bonusGold > 0 && (
+          <span className="shrink-0 font-mono text-[10px] text-warn">+{preview.bonusGold}g</span>
+        )}
+      </div>
+      <ul className="space-y-0.5">
+        {preview.spawns.map((s, i) => (
+          <li
+            key={`${s.kind}-${i}`}
+            className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-tight text-fg-muted sm:text-[11px]"
+          >
+            <span className="font-mono tabular-nums text-fg">{s.count}×</span>
+            <span className="text-fg">{s.name}</span>
+            <span style={{ color: ELEMENT_COLOR[s.armor] }}>{ELEMENT_LABEL[s.armor]}</span>
+            {s.isBoss && (
+              <span className="rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-danger ring-1 ring-danger/40">
+                Boss
+              </span>
+            )}
+            {s.buff && (
+              <span
+                className={
+                  BUFFS[s.buff].polarity === "strength" ? "text-success" : "text-danger"
+                }
+              >
+                {BUFFS[s.buff].name}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+      {preview.totalEnemies > 0 && (
+        <p className="mt-1 text-[10px] text-fg-subtle">{preview.totalEnemies} enemies</p>
+      )}
+    </div>
+  );
+}
+
 function HelpPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="absolute inset-0 z-20 flex items-end justify-center bg-bg/80 p-3 backdrop-blur-sm sm:items-center">
@@ -813,12 +934,43 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
 
           <section>
             <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+              Controls
+            </h4>
+            <ul className="space-y-1 text-xs leading-relaxed">
+              <li>
+                <strong className="text-fg">F</strong> — cycle game speed (1× / 2× / 3×). Buttons
+                also sit in the header.
+              </li>
+              <li>
+                <strong className="text-fg">T</strong> — cycle targeting on the selected tower:
+                First, Strong, Close, Last.
+              </li>
+              <li>
+                Between waves, a <strong className="text-fg">wave preview</strong> lists enemy
+                counts, armor, bosses, and spawn buffs.
+              </li>
+            </ul>
+          </section>
+
+          <section>
+            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
               Element matchups
             </h4>
             <MatchupGrid />
             <p className="mt-2 text-[11px] leading-relaxed">
               Ember melts Frost · Frost freezes Volt · Volt shocks Ember & Iron · Iron
               is steady but poor vs Iron armor.
+            </p>
+          </section>
+
+          <section>
+            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+              Tower debuffs
+            </h4>
+            <p className="text-xs leading-relaxed">
+              Higher-tier towers can apply <strong className="text-danger">Frail</strong> and{" "}
+              <strong className="text-danger">Exposed</strong> on hit (and Volt on chain hops).
+              Stack these with element matchups for big damage.
             </p>
           </section>
 

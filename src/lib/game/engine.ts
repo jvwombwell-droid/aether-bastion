@@ -11,6 +11,7 @@ import {
   TOTAL_LEVELS,
   TOWERS,
   WAVES_PER_LEVEL,
+  bossLeakCost,
   cellCenter,
   levelClearBonus,
   levelScale,
@@ -32,14 +33,19 @@ import type {
   FloatingText,
   GamePhase,
   GameSnapshot,
+  GameSpeed,
   Particle,
   PlacementMode,
   Projectile,
+  TargetMode,
   Tower,
   TowerKind,
   Vec2,
   WaveDef,
+  WavePreview,
+  WavePreviewSpawn,
 } from "./types";
+import { TARGET_MODES } from "./types";
 
 let nextId = 1;
 function id() {
@@ -73,6 +79,7 @@ export class GameEngine {
   score = 0;
   message: string | null = null;
   messageTimer = 0;
+  gameSpeed: GameSpeed = 1;
 
   pathCells: Array<[number, number]> = [];
   pathPoints: Vec2[] = [];
@@ -165,6 +172,16 @@ export class GameEngine {
     this.shake = 0;
     this.animTime = 0;
     this.levelClearTimer = 0;
+    this.gameSpeed = 1;
+  }
+
+  setGameSpeed(speed: GameSpeed) {
+    this.gameSpeed = speed;
+  }
+
+  cycleGameSpeed(): GameSpeed {
+    this.gameSpeed = this.gameSpeed === 1 ? 2 : this.gameSpeed === 2 ? 3 : 1;
+    return this.gameSpeed;
   }
 
   /** Advance to next level: path re-rolls around permanent towers; spawn/base may move. */
@@ -220,6 +237,53 @@ export class GameEngine {
     this.beginNextLevel();
   }
 
+  getNextWavePreview(): WavePreview | null {
+    if (this.phase !== "playing" && this.phase !== "paused") return null;
+    if (this.waveActive || this.wave >= this.levelWaves.length) return null;
+    const waveDef = this.levelWaves[this.wave];
+    if (!waveDef) return null;
+
+    const byKind = new Map<
+      import("./types").EnemyKind,
+      { count: number; buff?: BuffId }
+    >();
+    for (const s of waveDef.spawns) {
+      const prev = byKind.get(s.kind);
+      if (prev) {
+        prev.count += s.count;
+        if (s.spawnBuff) prev.buff = s.spawnBuff;
+      } else {
+        byKind.set(s.kind, {
+          count: s.count,
+          buff: s.spawnBuff,
+        });
+      }
+    }
+
+    const spawns: WavePreviewSpawn[] = [];
+    let totalEnemies = 0;
+    for (const [kind, agg] of byKind) {
+      const def = ENEMIES[kind];
+      totalEnemies += agg.count;
+      spawns.push({
+        kind,
+        name: def.name,
+        count: agg.count,
+        armor: def.armor,
+        isBoss: def.isBoss,
+        buff: agg.buff,
+      });
+    }
+
+    return {
+      name: waveDef.name,
+      waveNumber: this.wave + 1,
+      bonusGold: waveDef.bonusGold,
+      spawns,
+      totalEnemies,
+    };
+  }
+
   snapshot(): GameSnapshot {
     const next =
       !this.waveActive && this.wave < this.levelWaves.length
@@ -241,6 +305,8 @@ export class GameEngine {
       score: this.score,
       message: this.message,
       nextWaveName: next,
+      nextWavePreview: this.getNextWavePreview(),
+      gameSpeed: this.gameSpeed,
     };
   }
 
@@ -292,6 +358,7 @@ export class GameEngine {
       cooldown: 0.15,
       angle: 0,
       kills: 0,
+      targetMode: "first",
     };
     this.towers.push(tower);
     cell.occupied = true;
@@ -347,6 +414,21 @@ export class GameEngine {
     this.selectedTowerId = null;
     this.setMessage(`Sold for ${refund}g`);
     return true;
+  }
+
+  cycleSelectedTargetMode(): TargetMode | null {
+    const t = this.getSelectedTower();
+    if (!t) return null;
+    const idx = TARGET_MODES.indexOf(t.targetMode);
+    const next = TARGET_MODES[(idx + 1) % TARGET_MODES.length]!;
+    t.targetMode = next;
+    return next;
+  }
+
+  setSelectedTargetMode(mode: TargetMode) {
+    const t = this.getSelectedTower();
+    if (!t) return;
+    t.targetMode = mode;
   }
 
   startWave() {
@@ -516,18 +598,89 @@ export class GameEngine {
   private findTarget(tower: Tower): Enemy | null {
     const def = TOWERS[tower.kind].tiers[tower.tier - 1]!;
     const range2 = def.range * def.range;
+    const mode = tower.targetMode ?? "first";
     let best: Enemy | null = null;
     let bestProgress = -1;
+    let bestHp = -1;
+    let bestMaxHp = -1;
+    let bestDist = Infinity;
+    let worstProgress = Infinity;
+
     for (const e of this.enemies) {
       if (!e.alive) continue;
-      if (dist2(tower.x, tower.y, e.x, e.y) > range2) continue;
+      const d2 = dist2(tower.x, tower.y, e.x, e.y);
+      if (d2 > range2) continue;
       const prog = this.enemyPathProgress(e);
-      if (prog > bestProgress) {
+
+      if (mode === "first") {
+        if (prog > bestProgress) {
+          bestProgress = prog;
+          best = e;
+        }
+      } else if (mode === "last") {
+        if (prog < worstProgress) {
+          worstProgress = prog;
+          best = e;
+        }
+      } else if (mode === "close") {
+        if (d2 < bestDist) {
+          bestDist = d2;
+          best = e;
+        }
+      } else if (
+        e.maxHp > bestMaxHp ||
+        (e.maxHp === bestMaxHp && e.hp > bestHp) ||
+        (e.maxHp === bestMaxHp && e.hp === bestHp && prog > bestProgress)
+      ) {
+        bestMaxHp = e.maxHp;
+        bestHp = e.hp;
         bestProgress = prog;
         best = e;
       }
     }
     return best;
+  }
+
+  private applyEnemyBuff(enemy: Enemy, buffId: BuffId, duration: number) {
+    if (!enemy.alive) return;
+    const existing = enemy.buffs.find((b) => b.id === buffId);
+    let showFloat = false;
+    if (existing) {
+      if (!existing.permanent) {
+        if (duration > existing.remaining) {
+          existing.remaining = duration;
+          showFloat = true;
+        }
+      }
+    } else {
+      enemy.buffs.push({ id: buffId, remaining: duration });
+      showFloat = true;
+    }
+    const def = BUFFS[buffId];
+    if (showFloat && def.polarity === "weakness") {
+      this.floats.push({
+        x: enemy.x,
+        y: enemy.y - enemy.radius - 10,
+        text: def.name,
+        color: "#c9a86c",
+        life: 0.65,
+        maxLife: 0.65,
+        vy: -22,
+      });
+    }
+  }
+
+  private tryApplyProjectileBuff(
+    enemy: Enemy,
+    buffId: BuffId | undefined,
+    chance: number | undefined,
+    duration: number | undefined,
+  ) {
+    if (!buffId || !enemy.alive) return;
+    const roll = chance ?? 1;
+    if (Math.random() > roll) return;
+    const dur = duration ?? BUFFS[buffId].duration;
+    this.applyEnemyBuff(enemy, buffId, dur);
   }
 
   private fire(tower: Tower, target: Enemy) {
@@ -555,6 +708,15 @@ export class GameEngine {
       radius: 4 + tower.tier,
       alive: true,
       color: TOWERS[tower.kind].color,
+      applyBuff: tier.applyBuff,
+      applyBuffChance: tier.applyBuffChance,
+      applyBuffDuration: tier.applyBuffDuration,
+      splashBuff: tier.splashBuff,
+      splashBuffChance: tier.splashBuffChance,
+      splashBuffDuration: tier.splashBuffDuration,
+      chainBuff: tier.chainBuff,
+      chainBuffChance: tier.chainBuffChance,
+      chainBuffDuration: tier.chainBuffDuration,
     });
   }
 
@@ -576,12 +738,38 @@ export class GameEngine {
     }
 
     for (const e of targets) {
-      const splashFalloff = hit && e.id === hit.id ? 1 : 0.55;
+      const isPrimary = hit != null && e.id === hit.id;
+      const splashFalloff = isPrimary ? 1 : 0.55;
       this.applyDamage(e, p.damage * splashFalloff, p.element, {
         slow: p.slow,
         fromX: p.x,
         fromY: p.y,
       });
+
+      if (isPrimary) {
+        if (p.chained > 0) {
+          this.tryApplyProjectileBuff(
+            e,
+            p.chainBuff,
+            p.chainBuffChance,
+            p.chainBuffDuration,
+          );
+        } else {
+          this.tryApplyProjectileBuff(
+            e,
+            p.applyBuff,
+            p.applyBuffChance,
+            p.applyBuffDuration,
+          );
+        }
+      } else {
+        this.tryApplyProjectileBuff(
+          e,
+          p.splashBuff,
+          p.splashBuffChance,
+          p.splashBuffDuration,
+        );
+      }
     }
 
     if (p.chain > 0 && p.chained < p.chain && hit) {
@@ -631,7 +819,11 @@ export class GameEngine {
   }
 
   update(dt: number) {
-    const cap = Math.min(dt, 0.05);
+    // UI multiplies dt by gameSpeed; substep so 2×/3× remain accurate under the 50ms step cap.
+    let timeLeft = Math.min(Math.max(0, dt), 0.2);
+    while (timeLeft > 0) {
+    const cap = Math.min(timeLeft, 0.05);
+    timeLeft -= cap;
     this.animTime += cap;
 
     if (this.phase === "levelclear") {
@@ -639,11 +831,10 @@ export class GameEngine {
       if (this.levelClearTimer <= 0) {
         this.continueAfterLevelClear();
       }
-      return;
+      continue;
     }
 
     if (this.phase !== "playing") {
-      if (this.phase === "paused") return;
       return;
     }
 
@@ -699,13 +890,17 @@ export class GameEngine {
 
       if (e.pathIndex >= this.pathPoints.length - 1) {
         e.alive = false;
-        this.lives -= 1;
-        this.shake = 0.35;
-        this.burst(e.x, e.y, "#c45c5c", 10);
+        const isBoss = !!ENEMIES[e.kind].isBoss;
+        const leakCost = isBoss ? bossLeakCost(this.level) : 1;
+        this.lives = Math.max(0, this.lives - leakCost);
+        this.shake = isBoss ? 0.55 : 0.35;
+        this.burst(e.x, e.y, "#c45c5c", isBoss ? 18 : 10);
         if (this.lives <= 0) {
           this.lives = 0;
           this.phase = "lost";
-          this.setMessage("Base fallen.");
+          this.setMessage(isBoss ? "Boss breached the bastion." : "Base fallen.");
+        } else if (isBoss) {
+          this.setMessage(`Boss breach! −${leakCost} lives`);
         }
       }
     }
@@ -786,6 +981,12 @@ export class GameEngine {
         this.setMessage(`Wave clear! +${waveDef.bonusGold}g — prep next.`);
       }
     }
+
+    // Won / lost / levelclear: stop combat substeps (levelclear continues via loop head).
+    if (this.phase !== "playing") {
+      if (this.phase !== "levelclear") return;
+    }
+    } // while timeLeft
   }
 
   // ---- Rendering ----
