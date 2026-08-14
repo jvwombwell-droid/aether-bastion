@@ -6,9 +6,9 @@ export const ROWS = 14;
 export const MAP_W = COLS * CELL;
 export const MAP_H = ROWS * CELL;
 
-export const START_GOLD = 220;
+export const START_GOLD = 270;
 export const START_LIVES = 20;
-export const SELL_REFUND = 0.6;
+export const SELL_REFUND = 0.7;
 export const MAX_TIER = 3;
 
 /** 10 waves per level × 10 levels. */
@@ -86,6 +86,14 @@ export const BUFFS: Record<BuffId, BuffDef> = {
     description: "Regenerates health over time.",
     duration: 12,
     regenPerSec: 6,
+  },
+  shred: {
+    id: "shred",
+    name: "Shred",
+    polarity: "weakness",
+    description: "Armor cracked — weak matchups hurt much more.",
+    duration: 6,
+    damageTakenMul: 1.15,
   },
 };
 
@@ -199,36 +207,54 @@ export const TOWERS: Record<Element, TowerDef> = {
     kind: "iron",
     name: "Iron Bastion",
     short: "Iron",
-    description: "Splash shells that can Frail. Reliable vs all, weak vs Iron armor.",
+    description: "Shreds armor so every tower hits harder. Splash cracks Iron hides.",
     color: "#8b95a8",
     colorDim: "#3d4452",
     baseCost: 60,
     tiers: [
-      { damage: 12, range: 95, fireRate: 0.75, projectileSpeed: 260, splash: 42, slow: 0, chain: 0, cost: 60 },
+      {
+        damage: 12,
+        range: 100,
+        fireRate: 0.8,
+        projectileSpeed: 260,
+        splash: 46,
+        slow: 0,
+        chain: 0,
+        cost: 60,
+        applyBuff: "shred",
+        applyBuffChance: 0.45,
+        applyBuffDuration: 4,
+      },
       {
         damage: 20,
-        range: 110,
-        fireRate: 0.9,
+        range: 115,
+        fireRate: 0.95,
         projectileSpeed: 280,
-        splash: 55,
+        splash: 58,
         slow: 0,
         chain: 0,
         cost: 80,
-        splashBuff: "frail",
-        splashBuffChance: 0.4,
+        applyBuff: "shred",
+        applyBuffChance: 0.7,
+        applyBuffDuration: 5,
+        splashBuff: "shred",
+        splashBuffChance: 0.5,
         splashBuffDuration: 4,
       },
       {
         damage: 34,
-        range: 125,
-        fireRate: 1.05,
+        range: 130,
+        fireRate: 1.1,
         projectileSpeed: 300,
-        splash: 70,
+        splash: 74,
         slow: 0,
         chain: 0,
         cost: 120,
-        splashBuff: "frail",
-        splashBuffChance: 0.65,
+        applyBuff: "shred",
+        applyBuffChance: 1,
+        applyBuffDuration: 7,
+        splashBuff: "shred",
+        splashBuffChance: 0.85,
         splashBuffDuration: 6,
       },
     ],
@@ -515,8 +541,31 @@ export function scaleWavesForLevel(level: number): WaveDef[] {
 }
 
 export function levelClearBonus(level: number): number {
-  return Math.round(90 * Math.pow(1.42, level - 1));
+  return Math.round(110 * Math.pow(1.38, level - 1));
 }
+
+/** Extra gold when the path moves — more if towers were left off the new line. */
+export function frontShiftResupply(level: number, stranded: number): number {
+  return Math.round(45 + level * 16 + stranded * 24);
+}
+
+/** Upgrade to next tier — 1.6× listed cost (still steep, less punishing than 2×). */
+export function upgradeCost(kind: Element, currentTier: number): number | null {
+  if (currentTier >= MAX_TIER) return null;
+  const base = TOWERS[kind].tiers[currentTier]?.cost;
+  if (base == null) return null;
+  return Math.round(base * 1.6);
+}
+
+export const MATCHUP_MANTRA =
+  "Ember melts Frost · Frost freezes Volt · Volt shocks Ember & Iron · Iron cracks armor";
+
+export const MATCHUP_HINT: Record<Element, string> = {
+  ember: "EMBER > FROST",
+  frost: "FROST > VOLT",
+  volt: "VOLT > EMBER",
+  iron: "IRON shreds all",
+};
 
 export function cellCenter(col: number, row: number) {
   return { x: col * CELL + CELL / 2, y: row * CELL + CELL / 2 };
@@ -527,12 +576,4 @@ export function matchupLabel(tower: Element, armor: Element): "strong" | "weak" 
   if (m >= 1.4) return "strong";
   if (m <= 0.6) return "weak";
   return "neutral";
-}
-
-/** Upgrade to next tier — 2× the tier's listed cost. Placement uses tiers[0].cost unchanged. */
-export function upgradeCost(kind: Element, currentTier: number): number | null {
-  if (currentTier >= MAX_TIER) return null;
-  const base = TOWERS[kind].tiers[currentTier]?.cost;
-  if (base == null) return null;
-  return base * 2;
 }

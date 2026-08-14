@@ -13,10 +13,12 @@ import {
   WAVES_PER_LEVEL,
   bossLeakCost,
   cellCenter,
+  frontShiftResupply,
   levelClearBonus,
   levelScale,
   scaleWavesForLevel,
   upgradeCost,
+  MATCHUP_HINT,
 } from "./config";
 import {
   buildPathLengthsFromPoints,
@@ -24,6 +26,7 @@ import {
   levelMapSeed,
   pathCellsToPoints,
 } from "./mapgen";
+import { enemySprite, getSprite, towerSprite } from "./sprites";
 import type {
   ActiveBuff,
   BuffId,
@@ -80,11 +83,16 @@ export class GameEngine {
   message: string | null = null;
   messageTimer = 0;
   gameSpeed: GameSpeed = 1;
+  frontShift = 0;
+  coveringCount = 0;
+  strandedCount = 0;
 
   pathCells: Array<[number, number]> = [];
   pathPoints: Vec2[] = [];
   pathLengths: number[] = [0];
   pathTotal = 1;
+  private prevPathPoints: Vec2[] = [];
+  private matchupTeachCd = 0;
   private levelWaves: WaveDef[] = scaleWavesForLevel(1);
   private runSeed = 1;
   private levelClearTimer = 0;
@@ -173,6 +181,11 @@ export class GameEngine {
     this.animTime = 0;
     this.levelClearTimer = 0;
     this.gameSpeed = 1;
+    this.frontShift = 0;
+    this.coveringCount = 0;
+    this.strandedCount = 0;
+    this.prevPathPoints = [];
+    this.matchupTeachCd = 0;
   }
 
   setGameSpeed(speed: GameSpeed) {
@@ -188,16 +201,13 @@ export class GameEngine {
   private beginNextLevel() {
     const cleared = this.level;
     const bonus = levelClearBonus(cleared);
-    this.gold += bonus;
-    this.score += 500 + cleared * 200;
 
-    // Towers are permanent — path is generated around their exact tiles.
     const blocked: Array<[number, number]> = this.towers.map((t) => [t.col, t.row]);
+    this.prevPathPoints = this.pathPoints.slice();
 
     this.level += 1;
     this.loadMapForLevel(this.level, blocked);
 
-    // Towers stay put — refresh occupancy only
     for (const t of this.towers) {
       const cell = this.cells[t.row]![t.col]!;
       cell.occupied = true;
@@ -205,6 +215,12 @@ export class GameEngine {
       cell.path = false;
       t.cooldown = 0.2;
     }
+
+    this.refreshTowerCoverage();
+    const stranded = this.strandedCount;
+    const resupply = frontShiftResupply(this.level, stranded);
+    this.gold += bonus + resupply;
+    this.score += 500 + cleared * 200;
 
     this.enemies = [];
     this.projectiles = [];
@@ -219,11 +235,26 @@ export class GameEngine {
     this.lives = Math.min(START_LIVES, this.lives + 3 + Math.floor(cleared / 2));
     this.phase = "playing";
     this.levelClearTimer = 0;
+    this.frontShift = 4.2;
 
     this.setMessage(
-      `Level ${this.level} — towers locked · new path · +${bonus}g`,
-      5,
+      `The front shifts — ${this.coveringCount} covering · ${stranded} off-path · +${bonus + resupply}g`,
+      6,
     );
+  }
+
+  private refreshTowerCoverage() {
+    let covering = 0;
+    let stranded = 0;
+    for (const t of this.towers) {
+      const range = TOWERS[t.kind].tiers[t.tier - 1]!.range;
+      const r2 = range * range;
+      t.covering = this.pathPoints.some((p) => dist2(t.x, t.y, p.x, p.y) <= r2);
+      if (t.covering) covering += 1;
+      else stranded += 1;
+    }
+    this.coveringCount = covering;
+    this.strandedCount = stranded;
   }
 
   /** Called from UI when level-clear overlay continues (or auto after timer). */
@@ -307,6 +338,9 @@ export class GameEngine {
       nextWaveName: next,
       nextWavePreview: this.getNextWavePreview(),
       gameSpeed: this.gameSpeed,
+      frontShift: this.frontShift,
+      coveringCount: this.coveringCount,
+      strandedCount: this.strandedCount,
     };
   }
 
@@ -359,6 +393,7 @@ export class GameEngine {
       angle: 0,
       kills: 0,
       targetMode: "first",
+      covering: true,
     };
     this.towers.push(tower);
     cell.occupied = true;
@@ -393,6 +428,7 @@ export class GameEngine {
     }
     this.gold -= cost;
     t.tier += 1;
+    this.refreshTowerCoverage();
     this.burst(t.x, t.y, TOWERS[t.kind].color, 12);
     this.setMessage(`${TOWERS[t.kind].name} → Tier ${t.tier}`);
     return true;
@@ -402,16 +438,16 @@ export class GameEngine {
     const t = this.getSelectedTower();
     if (!t || this.phase !== "playing") return false;
     const def = TOWERS[t.kind];
-    let invested = 0;
-    for (let i = 0; i < t.tier; i++) {
-      // Tier 0 = placement cost; higher tiers paid 2× via upgradeCost
-      invested += def.tiers[i]!.cost * (i === 0 ? 1 : 2);
+    let invested = def.tiers[0]!.cost;
+    for (let i = 1; i < t.tier; i++) {
+      invested += upgradeCost(t.kind, i) ?? def.tiers[i]!.cost;
     }
     const refund = Math.floor(invested * SELL_REFUND);
     this.gold += refund;
     this.cells[t.row]![t.col]!.occupied = false;
     this.towers = this.towers.filter((x) => x.id !== t.id);
     this.selectedTowerId = null;
+    this.refreshTowerCoverage();
     this.setMessage(`Sold for ${refund}g`);
     return true;
   }
@@ -531,6 +567,11 @@ export class GameEngine {
 
   private damageMultiplier(element: Element, enemy: Enemy): number {
     let mul = MATCHUP[element][enemy.armor];
+    const shredded = enemy.buffs.some((b) => b.id === "shred");
+    if (shredded && mul < 1) {
+      // Armor cracked: pull weak matchups most of the way back toward 1.0
+      mul = mul + (1 - mul) * 0.62;
+    }
     for (const b of enemy.buffs) {
       const def = BUFFS[b.id];
       if (def.damageTakenMul) mul *= def.damageTakenMul;
@@ -559,16 +600,28 @@ export class GameEngine {
     enemy.hp -= dmg;
     enemy.hitFlash = 0.12;
     const isStrong = mul >= 1.4;
-    const isWeak = mul <= 0.6;
+    const isWeak = mul <= 0.65;
     this.floats.push({
-      x: enemy.x,
+      x: enemy.x + (Math.random() * 8 - 4),
       y: enemy.y - enemy.radius - 4,
-      text: isStrong ? `${dmg}!` : isWeak ? `${dmg}…` : `${dmg}`,
-      color: isStrong ? "#e8e8ea" : isWeak ? "#71717a" : TOWERS[element].color,
+      text: isStrong ? `${dmg}!` : isWeak ? `${dmg}` : `${dmg}`,
+      color: isStrong ? "#f4f4f5" : isWeak ? "#71717a" : TOWERS[element].color,
       life: 0.7,
       maxLife: 0.7,
       vy: -28,
     });
+    if (this.matchupTeachCd <= 0 && (isStrong || isWeak)) {
+      this.matchupTeachCd = 1.35;
+      this.floats.push({
+        x: enemy.x,
+        y: enemy.y - enemy.radius - 18,
+        text: isStrong ? MATCHUP_HINT[element] : "RESIST",
+        color: isStrong ? TOWERS[element].color : "#71717a",
+        life: 1.05,
+        maxLife: 1.05,
+        vy: -18,
+      });
+    }
     if (opts?.slow && opts.slow > 0) {
       enemy.slowTimer = Math.max(enemy.slowTimer, 1.6);
       enemy.slowMul = Math.min(enemy.slowMul, 1 - opts.slow);
@@ -843,6 +896,8 @@ export class GameEngine {
       if (this.messageTimer <= 0) this.message = null;
     }
     if (this.shake > 0) this.shake = Math.max(0, this.shake - cap * 4);
+    if (this.matchupTeachCd > 0) this.matchupTeachCd = Math.max(0, this.matchupTeachCd - cap);
+    if (this.frontShift > 0) this.frontShift = Math.max(0, this.frontShift - cap);
 
     if (this.waveActive) {
       this.waveTime += cap;
@@ -1039,6 +1094,8 @@ export class GameEngine {
       this.drawBase(ctx, this.pathPoints[this.pathPoints.length - 1]!);
     }
 
+    if (this.frontShift > 0) this.drawFrontShift(ctx);
+
     ctx.restore();
   }
 
@@ -1048,12 +1105,18 @@ export class GameEngine {
         const cell = this.cells[r]![c]!;
         const x = c * CELL;
         const y = r * CELL;
-        const layer = Math.min(r, ROWS - 1 - r, c, COLS - 1 - c);
-        const base = layer < 2 ? "#101014" : layer < 4 ? "#131318" : "#16161b";
-        ctx.fillStyle = cell.path ? "#1a1814" : base;
+        const h = ((c * 17 + r * 31) >>> 0) % 5;
+        if (cell.path) {
+          ctx.fillStyle = h < 2 ? "#2a2318" : h < 4 ? "#32291c" : "#2e2619";
+        } else {
+          const moss = ["#12161a", "#14181c", "#161a1e", "#13171b", "#15191d"][h]!;
+          ctx.fillStyle = moss;
+        }
         ctx.fillRect(x, y, CELL, CELL);
         if (!cell.path && cell.buildable) {
-          ctx.strokeStyle = "rgba(255,255,255,0.03)";
+          ctx.fillStyle = "rgba(90, 140, 110, 0.045)";
+          ctx.fillRect(x + 3, y + 3, CELL - 6, CELL - 6);
+          ctx.strokeStyle = "rgba(255,255,255,0.035)";
           ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
         }
       }
@@ -1061,12 +1124,31 @@ export class GameEngine {
   }
 
   private drawPath(ctx: CanvasRenderingContext2D) {
+    if (this.frontShift > 0 && this.prevPathPoints.length > 1) {
+      const fade = this.frontShift / 4.2;
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.globalAlpha = 0.22 * fade;
+      ctx.strokeStyle = "#6a5a48";
+      ctx.lineWidth = CELL * 0.7;
+      ctx.setLineDash([8, 10]);
+      ctx.beginPath();
+      for (let i = 0; i < this.prevPathPoints.length; i++) {
+        const p = this.prevPathPoints[i]!;
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
     if (this.pathPoints.length < 2) return;
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = "#2a241c";
-    ctx.lineWidth = CELL * 0.82;
+    ctx.strokeStyle = "#3a3024";
+    ctx.lineWidth = CELL * 0.84;
     ctx.beginPath();
     for (let i = 0; i < this.pathPoints.length; i++) {
       const p = this.pathPoints[i]!;
@@ -1074,10 +1156,10 @@ export class GameEngine {
       else ctx.lineTo(p.x, p.y);
     }
     ctx.stroke();
-    ctx.strokeStyle = "#3a3228";
-    ctx.lineWidth = CELL * 0.55;
+    ctx.strokeStyle = "#4a3e2e";
+    ctx.lineWidth = CELL * 0.52;
     ctx.stroke();
-    ctx.strokeStyle = "rgba(212,212,216,0.12)";
+    ctx.strokeStyle = "rgba(212,196,160,0.16)";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([6, 8]);
     ctx.stroke();
@@ -1171,6 +1253,11 @@ export class GameEngine {
       ctx.fill();
     }
 
+    const portal = getSprite("spawn");
+    if (portal) {
+      ctx.drawImage(portal, -22, -22, 44, 44);
+    }
+
     this.drawLabelPill(ctx, 0, -30, "SPAWN", "#c45c5c", "#1a0c0c");
 
     ctx.fillStyle = "rgba(196, 92, 92, 0.85)";
@@ -1229,6 +1316,11 @@ export class GameEngine {
     ctx.strokeStyle = accent;
     ctx.lineWidth = 2;
     ctx.stroke();
+
+    const keep = getSprite("base");
+    if (keep) {
+      ctx.drawImage(keep, -24, -28, 48, 48);
+    }
 
     ctx.fillStyle = accentDim;
     for (const bx of [-10, -3, 4]) {
@@ -1342,56 +1434,57 @@ export class GameEngine {
     ctx.save();
     ctx.translate(t.x, t.y);
 
+    if (this.frontShift > 0) {
+      const pulse = 0.45 + 0.55 * Math.sin(this.animTime * 6);
+      ctx.strokeStyle = t.covering
+        ? `rgba(90, 158, 111, ${0.35 + pulse * 0.5})`
+        : `rgba(212, 160, 64, ${0.35 + pulse * 0.5})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, 22 + pulse * 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     for (let layer = 0; layer < t.tier; layer++) {
-      const r = 14 + layer * 3;
+      const r = 16 + layer * 3;
       ctx.strokeStyle = layer === t.tier - 1 ? def.color : def.colorDim;
       ctx.lineWidth = 2;
-      ctx.globalAlpha = 0.35 + layer * 0.2;
+      ctx.globalAlpha = 0.28 + layer * 0.18;
       ctx.beginPath();
       ctx.arc(0, 0, r, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
-    ctx.fillStyle = "#1c1c22";
-    ctx.beginPath();
-    ctx.arc(0, 0, 12, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = selected ? "#f4f4f5" : def.colorDim;
-    ctx.lineWidth = selected ? 2 : 1.5;
-    ctx.stroke();
-
-    ctx.rotate(t.angle);
-    ctx.fillStyle = def.color;
-    if (t.kind === "ember") {
-      ctx.beginPath();
-      ctx.moveTo(14, 0);
-      ctx.lineTo(-6, 7);
-      ctx.lineTo(-6, -7);
-      ctx.closePath();
-      ctx.fill();
-    } else if (t.kind === "frost") {
-      ctx.fillRect(-5, -5, 16, 10);
-      ctx.beginPath();
-      ctx.moveTo(11, -7);
-      ctx.lineTo(18, 0);
-      ctx.lineTo(11, 7);
-      ctx.closePath();
-      ctx.fill();
-    } else if (t.kind === "volt") {
-      ctx.beginPath();
-      ctx.moveTo(4, -10);
-      ctx.lineTo(14, 0);
-      ctx.lineTo(4, 4);
-      ctx.lineTo(8, 10);
-      ctx.lineTo(-4, 2);
-      ctx.lineTo(2, -2);
-      ctx.closePath();
-      ctx.fill();
+    const sprite = towerSprite(t.kind);
+    if (sprite) {
+      const s = 38 + t.tier * 2;
+      ctx.drawImage(sprite, -s / 2, -s / 2 - 4, s, s);
     } else {
-      ctx.fillRect(-4, -8, 18, 16);
-      ctx.fillStyle = def.colorDim;
-      ctx.fillRect(10, -4, 6, 8);
+      ctx.fillStyle = "#1c1c22";
+      ctx.beginPath();
+      ctx.arc(0, 0, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = def.color;
+      ctx.beginPath();
+      ctx.arc(0, 0, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (selected) {
+      ctx.strokeStyle = "#f4f4f5";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 20, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (this.frontShift > 0 && !t.covering) {
+      ctx.fillStyle = "rgba(212,160,64,0.95)";
+      ctx.font = "700 8px Segoe UI, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("OFF PATH", 0, 24);
     }
 
     ctx.restore();
@@ -1400,7 +1493,7 @@ export class GameEngine {
     for (let i = 0; i < t.tier; i++) {
       ctx.fillStyle = def.color;
       ctx.beginPath();
-      ctx.arc(t.x - 8 + i * 8, t.y + 18, 2.2, 0, Math.PI * 2);
+      ctx.arc(t.x - 8 + i * 8, t.y + 20, 2.2, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
@@ -1418,7 +1511,7 @@ export class GameEngine {
       ctx.strokeStyle = "rgba(90,158,111,0.55)";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(0, 0, e.radius + 4, 0, Math.PI * 2);
+      ctx.arc(0, 0, e.radius + 6, 0, Math.PI * 2);
       ctx.stroke();
     }
     if (hasWeakness) {
@@ -1426,47 +1519,67 @@ export class GameEngine {
       ctx.lineWidth = 2;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
-      ctx.arc(0, 0, e.radius + 6, 0, Math.PI * 2);
+      ctx.arc(0, 0, e.radius + 8, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
     }
 
-    ctx.fillStyle = e.hitFlash > 0.05 ? "#f4f4f5" : def.color;
-    if (def.isBoss) {
-      ctx.beginPath();
-      ctx.moveTo(0, -e.radius);
-      ctx.lineTo(e.radius, 0);
-      ctx.lineTo(0, e.radius);
-      ctx.lineTo(-e.radius, 0);
-      ctx.closePath();
-      ctx.fill();
+    const sprite = enemySprite(e.kind);
+    const size = def.isBoss ? 46 : e.radius * 2.8;
+    if (sprite) {
+      ctx.drawImage(sprite, -size / 2, -size / 2 - 2, size, size);
     } else {
+      ctx.fillStyle = e.hitFlash > 0.05 ? "#f4f4f5" : def.color;
       ctx.beginPath();
       ctx.arc(0, 0, e.radius, 0, Math.PI * 2);
       ctx.fill();
     }
 
     ctx.strokeStyle = TOWERS[e.armor]?.color ?? "#a1a1aa";
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(0, 0, e.radius - 1, 0, Math.PI * 2);
+    ctx.arc(0, 0, size / 2 - 1, 0, Math.PI * 2);
     ctx.stroke();
 
-    const bw = e.radius * 2.2;
+    const bw = Math.max(22, size * 0.85);
     const bh = 3;
     const pct = Math.max(0, e.hp / e.maxHp);
     ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.fillRect(-bw / 2, -e.radius - 9, bw, bh);
+    ctx.fillRect(-bw / 2, -size / 2 - 8, bw, bh);
     ctx.fillStyle = pct > 0.4 ? "#5a9e6f" : "#c45c5c";
-    ctx.fillRect(-bw / 2, -e.radius - 9, bw * pct, bh);
+    ctx.fillRect(-bw / 2, -size / 2 - 8, bw * pct, bh);
 
     if (e.slowTimer > 0) {
       ctx.fillStyle = "rgba(91,159,212,0.7)";
       ctx.beginPath();
-      ctx.arc(e.radius - 2, e.radius - 2, 3, 0, Math.PI * 2);
+      ctx.arc(size / 2 - 4, size / 2 - 4, 3, 0, Math.PI * 2);
       ctx.fill();
     }
 
+    ctx.restore();
+  }
+
+  private drawFrontShift(ctx: CanvasRenderingContext2D) {
+    const fade = Math.min(1, this.frontShift / 0.6, (4.2 - this.frontShift) / 0.45);
+    const mid = (COLS * CELL) / 2;
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = "rgba(8,8,12,0.62)";
+    ctx.fillRect(mid - 210, 10, 420, 50);
+    ctx.strokeStyle = "rgba(212,196,160,0.4)";
+    ctx.strokeRect(mid - 210, 10, 420, 50);
+    ctx.fillStyle = "#e8e0d0";
+    ctx.font = "700 14px Segoe UI, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("THE FRONT SHIFTS", mid, 26);
+    ctx.font = "500 11px Segoe UI, sans-serif";
+    ctx.fillStyle = "#a8a29a";
+    ctx.fillText(
+      `${this.coveringCount} still cover the road · ${this.strandedCount} now inland`,
+      mid,
+      44,
+    );
     ctx.restore();
   }
 

@@ -24,6 +24,7 @@ import {
   ENEMIES,
   MATCHUP,
   MAX_TIER,
+  MATCHUP_MANTRA,
   TOTAL_LEVELS,
   TOWERS,
   WAVES_PER_LEVEL,
@@ -38,6 +39,7 @@ import type {
   WavePreview,
 } from "@/lib/game/types";
 import { TARGET_MODE_LABEL } from "@/lib/game/types";
+import { preloadSprites } from "@/lib/game/sprites";
 
 const TOWER_ORDER: TowerKind[] = ["ember", "frost", "volt", "iron"];
 const SPEED_OPTIONS: GameSpeed[] = [1, 2, 3];
@@ -114,6 +116,7 @@ export function TowerDefense() {
   }, [engine]);
 
   useEffect(() => {
+    preloadSprites();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -478,8 +481,9 @@ export function TowerDefense() {
                   Score <span className="font-mono text-fg">{snap.score}</span>
                 </p>
                 <p className="mb-6 text-sm text-fg-muted">
-                  Next: Level {Math.min(snap.level + 1, snap.totalLevels)} — new path, harder
-                  enemies, towers stay locked
+                  The siege front moves. Your towers stay locked — a new path will
+                  wind around them. Off-path towers get a gold resupply so you can
+                  reinforce the new line.
                 </p>
                 <button
                   type="button"
@@ -602,8 +606,17 @@ export function TowerDefense() {
                         !canAfford ? "opacity-50" : "",
                       ].join(" ")}
                     >
-                      <span className="text-xs font-semibold" style={{ color: def.color }}>
-                        {def.short}
+                      <span className="flex items-center gap-1.5">
+                        <img
+                          src={`/sprites/${kind}.png`}
+                          alt=""
+                          width={20}
+                          height={20}
+                          className="size-5 shrink-0 object-contain"
+                        />
+                        <span className="text-xs font-semibold" style={{ color: def.color }}>
+                          {def.short}
+                        </span>
                       </span>
                       <span className="font-mono text-[11px] text-fg-muted">{cost}g</span>
                     </button>
@@ -626,6 +639,7 @@ export function TowerDefense() {
                       <p className="text-xs text-fg-muted">
                         Tier {selected.tier}/{MAX_TIER} · {selected.kills} kills ·{" "}
                         {TARGET_MODE_LABEL[selectedTargetMode]}
+                        {selected.covering === false ? " · off the new path" : ""}
                       </p>
                     </div>
                     <span
@@ -693,9 +707,10 @@ export function TowerDefense() {
             </div>
 
             <div className="hidden rounded-[var(--radius-md)] border border-border bg-bg p-3 lg:block">
-              <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-fg-subtle">
+              <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-fg-subtle">
                 Element matchups
               </p>
+              <p className="mb-2 text-[10px] leading-snug text-fg-muted">{MATCHUP_MANTRA}</p>
               <MatchupGrid compact />
               <div className="mt-2 space-y-1 text-[10px] text-fg-subtle">
                 <p>
@@ -875,6 +890,13 @@ function WavePreviewPanel({ preview }: { preview: WavePreview }) {
             className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-tight text-fg-muted sm:text-[11px]"
           >
             <span className="font-mono tabular-nums text-fg">{s.count}×</span>
+            <img
+              src={`/sprites/${s.kind}.png`}
+              alt=""
+              width={18}
+              height={18}
+              className="size-[18px] shrink-0 object-contain"
+            />
             <span className="text-fg">{s.name}</span>
             <span style={{ color: ELEMENT_COLOR[s.armor] }}>{ELEMENT_LABEL[s.armor]}</span>
             {s.isBoss && (
@@ -957,10 +979,7 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               Element matchups
             </h4>
             <MatchupGrid />
-            <p className="mt-2 text-[11px] leading-relaxed">
-              Ember melts Frost · Frost freezes Volt · Volt shocks Ember & Iron · Iron
-              is steady but poor vs Iron armor.
-            </p>
+            <p className="mt-2 text-[11px] leading-relaxed">{MATCHUP_MANTRA}</p>
           </section>
 
           <section>

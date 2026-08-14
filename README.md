@@ -5,11 +5,12 @@ Elemental tower defense game — hold the path across **10 levels** of **10 wave
 ## Features
 
 - **4 elemental towers** (Ember, Frost, Volt, Iron) with tier upgrades and rock-paper-scissors matchups
-- **Enemy armor + strength/weakness buffs** (Fortify, Haste, Ward, Frail, Exposed, Regen)
+- **Iron Bastion shreds armor** so weak matchups stop bouncing
+- **Enemy armor + strength/weakness buffs** (Fortify, Haste, Ward, Frail, Exposed, Regen, Shred)
 - **Permanent towers** — once placed, they stay forever; new levels re-route the path around them
+- **The front shifts** — covering vs off-path towers are called out, with a gold resupply
 - **Randomized maps** each level (spawn/base can move edges; path ~30% of free tiles)
-- **Exponential difficulty** across levels
-- Upgrades cost **2×** placement tier prices
+- Escalating difficulty across 10 levels · 1.6× upgrade costs · 70% sell refund
 
 ## Play
 

@@ -12,7 +12,7 @@ export type EnemyKind =
   | "boss";
 
 /** Temporary combat modifiers on attackers. */
-export type BuffId = "fortify" | "haste" | "ward" | "frail" | "expose" | "regen";
+export type BuffId = "fortify" | "haste" | "ward" | "frail" | "expose" | "regen" | "shred";
 
 export interface BuffDef {
   id: BuffId;
@@ -132,6 +132,8 @@ export interface Tower {
   angle: number;
   kills: number;
   targetMode: TargetMode;
+  /** True if current path is inside this tower's range. */
+  covering: boolean;
 }
 
 export interface ActiveBuff {
@@ -263,4 +265,8 @@ export interface GameSnapshot {
   /** Full next-wave roster when idle between waves */
   nextWavePreview: WavePreview | null;
   gameSpeed: GameSpeed;
+  /** Seconds remaining on the post-level "front shifts" beat. */
+  frontShift: number;
+  coveringCount: number;
+  strandedCount: number;
 }
