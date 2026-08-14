@@ -86,6 +86,12 @@ export class GameEngine {
   frontShift = 0;
   coveringCount = 0;
   strandedCount = 0;
+  fpv = false;
+  fpvYaw = 0;
+  fpvPitch = 0.12;
+  fpvLookYaw = 0;
+  fpvLookPitch = 0;
+  fpvDragging = false;
 
   pathCells: Array<[number, number]> = [];
   pathPoints: Vec2[] = [];
@@ -186,6 +192,10 @@ export class GameEngine {
     this.strandedCount = 0;
     this.prevPathPoints = [];
     this.matchupTeachCd = 0;
+    this.fpv = false;
+    this.fpvLookYaw = 0;
+    this.fpvLookPitch = 0;
+    this.fpvDragging = false;
   }
 
   setGameSpeed(speed: GameSpeed) {
@@ -236,6 +246,7 @@ export class GameEngine {
     this.phase = "playing";
     this.levelClearTimer = 0;
     this.frontShift = 4.2;
+    this.fpv = false;
 
     this.setMessage(
       `The front shifts — ${this.coveringCount} covering · ${stranded} off-path · +${bonus + resupply}g`,
@@ -341,6 +352,7 @@ export class GameEngine {
       frontShift: this.frontShift,
       coveringCount: this.coveringCount,
       strandedCount: this.strandedCount,
+      fpv: this.fpv,
     };
   }
 
@@ -348,6 +360,7 @@ export class GameEngine {
     if (this.phase !== "playing") return;
     this.placement = kind;
     this.selectedTowerId = null;
+    if (kind) this.fpv = false;
   }
 
   setHover(col: number, row: number) {
@@ -411,7 +424,57 @@ export class GameEngine {
       this.placement = null;
     } else if (!this.placement) {
       this.selectedTowerId = null;
+      this.fpv = false;
     }
+  }
+
+  toggleFpv(): boolean {
+    const t = this.getSelectedTower();
+    if (!t) {
+      this.fpv = false;
+      return false;
+    }
+    this.fpv = !this.fpv;
+    if (this.fpv) {
+      this.fpvLookYaw = 0;
+      this.fpvLookPitch = 0;
+      this.fpvYaw = this.aimYawFromTower(t);
+      this.fpvPitch = 0.12;
+      this.setMessage(`${TOWERS[t.kind].name} — turret cam`, 2);
+    }
+    return this.fpv;
+  }
+
+  setFpv(on: boolean) {
+    if (on) {
+      if (!this.getSelectedTower()) return;
+      if (!this.fpv) this.toggleFpv();
+    } else {
+      this.fpv = false;
+      this.fpvDragging = false;
+    }
+  }
+
+  lookFpv(dx: number, dy: number) {
+    if (!this.fpv) return;
+    this.fpvLookYaw += dx * 0.0045;
+    this.fpvLookPitch = Math.max(-0.35, Math.min(0.45, this.fpvLookPitch + dy * 0.0032));
+  }
+
+  private aimYawFromTower(t: Tower): number {
+    const target = this.findTarget(t);
+    if (target) return Math.atan2(target.y - t.y, target.x - t.x);
+    // Face the nearest path point
+    let best = t.angle || 0;
+    let bestD = Infinity;
+    for (const p of this.pathPoints) {
+      const d = dist2(t.x, t.y, p.x, p.y);
+      if (d < bestD && d > 40) {
+        bestD = d;
+        best = Math.atan2(p.y - t.y, p.x - t.x);
+      }
+    }
+    return best;
   }
 
   upgradeSelected(): boolean {
@@ -447,6 +510,7 @@ export class GameEngine {
     this.cells[t.row]![t.col]!.occupied = false;
     this.towers = this.towers.filter((x) => x.id !== t.id);
     this.selectedTowerId = null;
+    this.fpv = false;
     this.refreshTowerCoverage();
     this.setMessage(`Sold for ${refund}g`);
     return true;
@@ -1050,6 +1114,13 @@ export class GameEngine {
       this.animTime += 1 / 60;
     }
 
+    const selected = this.getSelectedTower();
+    if (this.fpv && selected && this.phase !== "menu") {
+      this.tickFpvCamera(selected);
+      this.drawFpv(ctx, viewW, viewH, selected);
+      return;
+    }
+
     const scale = Math.min(viewW / (COLS * CELL), viewH / (ROWS * CELL));
     const drawW = COLS * CELL * scale;
     const drawH = ROWS * CELL * scale;
@@ -1078,7 +1149,6 @@ export class GameEngine {
     if (this.placement && this.hoverCol >= 0) {
       this.drawPlacementGhost(ctx, this.hoverCol, this.hoverRow);
     }
-    const selected = this.getSelectedTower();
     if (selected) {
       this.drawRange(ctx, selected);
     }
@@ -1616,6 +1686,370 @@ export class GameEngine {
     ctx.textAlign = "center";
     ctx.fillText(f.text, f.x, f.y);
     ctx.restore();
+  }
+
+  private tickFpvCamera(t: Tower) {
+    const desired = this.aimYawFromTower(t);
+    let d = desired - this.fpvYaw;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    this.fpvYaw += d * 0.07;
+    t.angle = this.fpvYaw + this.fpvLookYaw;
+  }
+
+  private projectFpv(
+    wx: number,
+    wy: number,
+    height: number,
+    camX: number,
+    camY: number,
+    yaw: number,
+    pitch: number,
+    vw: number,
+    vh: number,
+  ): { x: number; y: number; z: number; s: number } | null {
+    const dx = wx - camX;
+    const dy = wy - camY;
+    const fx = Math.cos(yaw);
+    const fy = Math.sin(yaw);
+    const rx = -Math.sin(yaw);
+    const ry = Math.cos(yaw);
+    const right = dx * rx + dy * ry;
+    const forward = dx * fx + dy * fy;
+    const up = height - 20;
+    if (forward < 10) return null;
+    const cp = Math.cos(pitch);
+    const sp = Math.sin(pitch);
+    const fz = forward * cp - up * sp;
+    const fy2 = forward * sp + up * cp;
+    if (fz < 8) return null;
+    const f = vh / (2 * Math.tan(0.52));
+    return {
+      x: vw / 2 + (right / fz) * f,
+      y: vh * 0.46 - (fy2 / fz) * f,
+      z: fz,
+      s: f / fz,
+    };
+  }
+
+  private drawFpv(ctx: CanvasRenderingContext2D, vw: number, vh: number, cam: Tower) {
+    const yaw = this.fpvYaw + this.fpvLookYaw;
+    const pitch = this.fpvPitch + this.fpvLookPitch;
+    const def = TOWERS[cam.kind];
+    const project = (wx: number, wy: number, h = 0) =>
+      this.projectFpv(wx, wy, h, cam.x, cam.y, yaw, pitch, vw, vh);
+
+    ctx.save();
+    ctx.clearRect(0, 0, vw, vh);
+
+    const sky = ctx.createLinearGradient(0, 0, 0, vh * 0.5);
+    sky.addColorStop(0, "#141820");
+    sky.addColorStop(0.55, "#1c1816");
+    sky.addColorStop(1, "#2a2218");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, vw, vh * 0.5);
+
+    const ground = ctx.createLinearGradient(0, vh * 0.42, 0, vh);
+    ground.addColorStop(0, "#3a3224");
+    ground.addColorStop(0.35, "#2a2418");
+    ground.addColorStop(1, "#14110c");
+    ctx.fillStyle = ground;
+    ctx.fillRect(0, vh * 0.42, vw, vh * 0.58);
+
+    // Horizon haze
+    const haze = ctx.createLinearGradient(0, vh * 0.38, 0, vh * 0.52);
+    haze.addColorStop(0, "rgba(180,140,90,0)");
+    haze.addColorStop(0.5, "rgba(180,140,90,0.12)");
+    haze.addColorStop(1, "rgba(40,32,20,0)");
+    ctx.fillStyle = haze;
+    ctx.fillRect(0, vh * 0.36, vw, vh * 0.2);
+
+    // Ground grid — short lanes only, close to camera
+    ctx.strokeStyle = "rgba(255,230,180,0.05)";
+    ctx.lineWidth = 1;
+    const rightX = Math.cos(yaw + Math.PI / 2);
+    const rightY = Math.sin(yaw + Math.PI / 2);
+    const fwdX = Math.cos(yaw);
+    const fwdY = Math.sin(yaw);
+    for (let i = -6; i <= 6; i++) {
+      const ox = cam.x + rightX * i * 36;
+      const oy = cam.y + rightY * i * 36;
+      const a = project(ox + fwdX * 50, oy + fwdY * 50);
+      const b = project(ox + fwdX * 280, oy + fwdY * 280);
+      if (!a || !b) continue;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+
+    // Path as receding road — one stroke per segment so width can shrink with depth
+    const pathProj = this.pathPoints.map((p) => project(p.x, p.y, 0));
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (let i = 0; i < pathProj.length - 1; i++) {
+      const a = pathProj[i];
+      const b = pathProj[i + 1];
+      if (!a || !b) continue;
+      if (Math.hypot(a.x - b.x, a.y - b.y) > vw * 0.85) continue;
+      ctx.strokeStyle = "#4a3c28";
+      ctx.lineWidth = Math.max(5, Math.min(36, ((a.s + b.s) / 2) * 0.32));
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(212,196,160,0.2)";
+      ctx.lineWidth = Math.max(1, ctx.lineWidth * 0.18);
+      ctx.stroke();
+    }
+    // Spawn / base markers
+    if (this.pathPoints.length) {
+      const sp = project(this.pathPoints[0]!.x, this.pathPoints[0]!.y, 10);
+      const bp = project(this.pathPoints[this.pathPoints.length - 1]!.x, this.pathPoints[this.pathPoints.length - 1]!.y, 14);
+      if (sp) {
+        const img = getSprite("spawn");
+        const sz = Math.max(18, Math.min(70, sp.s * 0.9));
+        if (img) ctx.drawImage(img, sp.x - sz / 2, sp.y - sz, sz, sz);
+      }
+      if (bp) {
+        const img = getSprite("base");
+        const sz = Math.max(20, Math.min(78, bp.s * 1.0));
+        if (img) ctx.drawImage(img, bp.x - sz / 2, bp.y - sz, sz, sz);
+      }
+    }
+
+    type SpriteBillboard = {
+      z: number;
+      draw: () => void;
+    };
+    const billboards: SpriteBillboard[] = [];
+
+    for (const t of this.towers) {
+      if (t.id === cam.id) continue;
+      const p = project(t.x, t.y, 12);
+      if (!p) continue;
+      billboards.push({
+        z: p.z,
+        draw: () => {
+          const spr = towerSprite(t.kind);
+          const sz = Math.max(16, Math.min(72, p.s * 0.85));
+          if (spr) ctx.drawImage(spr, p.x - sz / 2, p.y - sz * 0.92, sz, sz);
+          else {
+            ctx.fillStyle = TOWERS[t.kind].color;
+            ctx.fillRect(p.x - 6, p.y - 16, 12, 16);
+          }
+        },
+      });
+    }
+
+    const tracked = this.findTarget(cam);
+    for (const e of this.enemies) {
+      if (!e.alive && e.hitFlash <= 0) continue;
+      const p = project(e.x, e.y, 8);
+      if (!p) continue;
+      billboards.push({
+        z: p.z,
+        draw: () => {
+          const spr = enemySprite(e.kind);
+          const sz = Math.max(18, Math.min(110, p.s * (e.kind === "boss" ? 1.35 : 1.05)));
+          ctx.save();
+          if (e.hitFlash > 0) ctx.globalAlpha = 0.65 + Math.sin(e.hitFlash * 40) * 0.35;
+          if (spr) ctx.drawImage(spr, p.x - sz / 2, p.y - sz * 0.95, sz, sz);
+          else {
+            ctx.fillStyle = ENEMIES[e.kind].color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y - sz * 0.4, sz * 0.28, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          const bw = sz * 0.7;
+          const pct = Math.max(0, e.hp / e.maxHp);
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(p.x - bw / 2, p.y - sz - 6, bw, 4);
+          ctx.fillStyle = pct > 0.4 ? "#5a9e6f" : "#c45c5c";
+          ctx.fillRect(p.x - bw / 2, p.y - sz - 6, bw * pct, 4);
+          if (tracked && tracked.id === e.id) {
+            ctx.strokeStyle = def.color;
+            ctx.lineWidth = 2;
+            ctx.strokeRect(p.x - sz / 2 - 4, p.y - sz - 10, sz + 8, sz + 14);
+          }
+          ctx.restore();
+        },
+      });
+    }
+
+    for (const pr of this.projectiles) {
+      if (!pr.alive) continue;
+      const p = project(pr.x, pr.y, 10);
+      if (!p) continue;
+      billboards.push({
+        z: p.z,
+        draw: () => {
+          ctx.save();
+          ctx.fillStyle = pr.color;
+          ctx.shadowColor = pr.color;
+          ctx.shadowBlur = 10;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y - 8, Math.max(2, Math.min(8, p.s * 0.08)), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        },
+      });
+    }
+
+    billboards.sort((a, b) => b.z - a.z);
+    for (const b of billboards) b.draw();
+
+    // Range ring on ground
+    const range = def.tiers[cam.tier - 1]!.range;
+    ctx.save();
+    ctx.strokeStyle = def.color + "55";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    let ringStarted = false;
+    for (let a = 0; a <= 32; a++) {
+      const ang = (a / 32) * Math.PI * 2;
+      const p = project(cam.x + Math.cos(ang) * range, cam.y + Math.sin(ang) * range, 0);
+      if (!p) {
+        ringStarted = false;
+        continue;
+      }
+      if (!ringStarted) {
+        ctx.moveTo(p.x, p.y);
+        ringStarted = true;
+      } else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // Stone visor / crenellation
+    ctx.fillStyle = "#121214";
+    ctx.fillRect(0, 0, vw, 36);
+    ctx.fillRect(0, vh - 54, vw, 54);
+    ctx.fillStyle = "#1a1a1e";
+    for (let x = 0; x < vw; x += 28) {
+      ctx.fillRect(x + 4, 28, 16, 14);
+      ctx.fillRect(x + 4, vh - 68, 16, 16);
+    }
+
+    // Vignette
+    const vig = ctx.createRadialGradient(vw / 2, vh * 0.48, vh * 0.2, vw / 2, vh * 0.48, vh * 0.72);
+    vig.addColorStop(0, "rgba(0,0,0,0)");
+    vig.addColorStop(1, "rgba(0,0,0,0.55)");
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, vw, vh);
+
+    // Crosshair
+    ctx.strokeStyle = def.color;
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = 1.5;
+    const cx = vw / 2;
+    const cy = vh * 0.46;
+    ctx.beginPath();
+    ctx.moveTo(cx - 16, cy);
+    ctx.lineTo(cx - 5, cy);
+    ctx.moveTo(cx + 5, cy);
+    ctx.lineTo(cx + 16, cy);
+    ctx.moveTo(cx, cy - 16);
+    ctx.lineTo(cx, cy - 5);
+    ctx.moveTo(cx, cy + 5);
+    ctx.lineTo(cx, cy + 16);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, 22, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // HUD
+    ctx.fillStyle = def.color;
+    ctx.font = "700 13px Segoe UI, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(def.name.toUpperCase(), 16, vh - 28);
+    ctx.fillStyle = "#a1a1aa";
+    ctx.font = "500 11px Segoe UI, sans-serif";
+    ctx.fillText(`T${cam.tier} · ${cam.kills} kills · drag to look · V exit`, 16, vh - 12);
+
+    if (tracked) {
+      const ed = ENEMIES[tracked.kind];
+      const mul = this.damageMultiplier(cam.kind, tracked);
+      const tag = mul >= 1.4 ? "STRONG" : mul <= 0.65 ? "RESIST" : "HIT";
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#e4e4e7";
+      ctx.font = "600 12px Segoe UI, sans-serif";
+      ctx.fillText(ed.name, vw - 16, vh - 28);
+      ctx.fillStyle = mul >= 1.4 ? "#5a9e6f" : mul <= 0.65 ? "#c45c5c" : def.color;
+      ctx.font = "700 11px Segoe UI, sans-serif";
+      ctx.fillText(`${tag}  ${Math.round(tracked.hp)}/${tracked.maxHp}`, vw - 16, vh - 12);
+    } else {
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#71717a";
+      ctx.font = "500 11px Segoe UI, sans-serif";
+      ctx.fillText("No target in range", vw - 16, vh - 20);
+    }
+
+    ctx.restore();
+
+    this.drawFpvMinimap(ctx, vw, vh, cam);
+  }
+
+  private drawFpvMinimap(ctx: CanvasRenderingContext2D, vw: number, vh: number, cam: Tower) {
+    const mw = Math.min(176, vw * 0.28);
+    const mh = mw * (ROWS / COLS);
+    const mx = vw - mw - 12;
+    const my = 44;
+    const sx = mw / (COLS * CELL);
+    const sy = mh / (ROWS * CELL);
+
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = "rgba(10,10,12,0.82)";
+    ctx.fillRect(mx - 4, my - 4, mw + 8, mh + 8);
+    ctx.strokeStyle = "rgba(212,196,160,0.35)";
+    ctx.strokeRect(mx - 4, my - 4, mw + 8, mh + 8);
+
+    ctx.translate(mx, my);
+    ctx.scale(sx, sy);
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const cell = this.cells[r]![c]!;
+        ctx.fillStyle = cell.path ? "#3a3224" : "#1a1c20";
+        ctx.fillRect(c * CELL, r * CELL, CELL + 0.5, CELL + 0.5);
+      }
+    }
+    ctx.strokeStyle = "#6a5a40";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    for (let i = 0; i < this.pathPoints.length; i++) {
+      const p = this.pathPoints[i]!;
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+
+    for (const t of this.towers) {
+      ctx.fillStyle = t.id === cam.id ? "#f4f4f5" : TOWERS[t.kind].color;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, t.id === cam.id ? 10 : 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      ctx.fillStyle = ENEMIES[e.kind].color;
+      ctx.fillRect(e.x - 4, e.y - 4, 8, 8);
+    }
+
+    // View cone
+    const yaw = this.fpvYaw + this.fpvLookYaw;
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.beginPath();
+    ctx.moveTo(cam.x, cam.y);
+    ctx.arc(cam.x, cam.y, 90, yaw - 0.5, yaw + 0.5);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+    void vh;
   }
 
   screenToCell(

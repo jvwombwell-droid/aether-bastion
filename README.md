@@ -35,7 +35,7 @@ React 19 · TypeScript · Vite · TanStack Start · Tailwind CSS
 | U | Upgrade selected |
 | X | Sell selected |
 | F | Cycle game speed (1× / 2× / 3×) |
-| T | Cycle selected tower targeting (First / Strong / Close / Last) |
+| V | Turret cam (FPV) from the selected tower |
 | Esc | Pause |
 
 Between waves, a **wave preview** shows the upcoming roster (counts, armor, bosses, buffs). Higher-tier towers can apply **debuffs** (Frail, Exposed) on hit — stack them with element matchups.

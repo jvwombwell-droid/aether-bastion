@@ -269,4 +269,6 @@ export interface GameSnapshot {
   frontShift: number;
   coveringCount: number;
   strandedCount: number;
+  /** First-person turret camera from the selected tower. */
+  fpv: boolean;
 }

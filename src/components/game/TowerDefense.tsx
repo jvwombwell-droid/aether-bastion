@@ -14,6 +14,7 @@ import {
   Volume2,
   VolumeX,
   Layers,
+  Eye,
 } from "lucide-react";
 import { GameEngine } from "@/lib/game/engine";
 import {
@@ -192,8 +193,36 @@ export function TowerDefense() {
           pushSnap();
         }
       } else if (e.key === "p" || e.key === "P" || e.key === "Escape") {
+        if (e.key === "Escape" && engine.fpv) {
+          engine.setFpv(false);
+          pushSnap();
+          return;
+        }
         engine.togglePause();
         pushSnap();
+      } else if (e.key === "v" || e.key === "V") {
+        engine.toggleFpv();
+        pushSnap();
+      } else if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") {
+        if (engine.fpv) {
+          engine.lookFpv(-18, 0);
+          e.preventDefault();
+        }
+      } else if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") {
+        if (engine.fpv) {
+          engine.lookFpv(18, 0);
+          e.preventDefault();
+        }
+      } else if (e.key === "ArrowUp") {
+        if (engine.fpv) {
+          engine.lookFpv(0, -14);
+          e.preventDefault();
+        }
+      } else if (e.key === "ArrowDown") {
+        if (engine.fpv) {
+          engine.lookFpv(0, 14);
+          e.preventDefault();
+        }
       } else if (e.key === "1") {
         engine.setPlacement("ember");
         pushSnap();
@@ -227,7 +256,7 @@ export function TowerDefense() {
   const selected = useMemo(() => {
     if (snap.selectedTowerId == null) return null;
     return engine.getSelectedTower();
-  }, [snap.selectedTowerId, engine, snap.gold, snap.wave, snap.score, snap.level]);
+  }, [snap.selectedTowerId, engine, snap.gold, snap.wave, snap.score, snap.level, snap.fpv]);
 
   const startGame = () => {
     audio.unlock();
@@ -240,6 +269,19 @@ export function TowerDefense() {
     if (engine.phase !== "playing" && engine.phase !== "paused") return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    if (engine.fpv) {
+      if (e.type === "pointerdown") {
+        engine.fpvDragging = true;
+        canvas.setPointerCapture(e.pointerId);
+      } else if (e.type === "pointermove" && engine.fpvDragging) {
+        engine.lookFpv(e.movementX, e.movementY);
+      } else if (e.type === "pointerup" || e.type === "pointercancel") {
+        engine.fpvDragging = false;
+      }
+      return;
+    }
+
     const rect = canvas.getBoundingClientRect();
     const { w, h } = sizeRef.current;
     const cell = engine.screenToCell(e.clientX, e.clientY, rect, w, h);
@@ -308,6 +350,12 @@ export function TowerDefense() {
   const cycleTargetMode = () => {
     engine.cycleSelectedTargetMode();
     audio.beep(360, 0.04, "triangle", 0.03);
+    pushSnap();
+  };
+
+  const toggleFpv = () => {
+    const on = engine.toggleFpv();
+    audio.beep(on ? 480 : 260, 0.07, "triangle", 0.04);
     pushSnap();
   };
 
@@ -407,9 +455,11 @@ export function TowerDefense() {
         >
           <canvas
             ref={canvasRef}
-            className="block h-full w-full"
+            className={["block h-full w-full", snap.fpv ? "cursor-grab active:cursor-grabbing" : ""].join(" ")}
             onPointerDown={onPointer}
             onPointerMove={onPointer}
+            onPointerUp={onPointer}
+            onPointerCancel={onPointer}
           />
 
           {snap.message && snap.phase !== "menu" && (
@@ -461,7 +511,7 @@ export function TowerDefense() {
                   ))}
                 </div>
                 <p className="mt-4 text-[11px] text-fg-subtle">
-                  Keys: 1–4 build · Space wave · U upgrade · X sell · F speed · T target · Esc
+                  Keys: 1–4 build · Space wave · U upgrade · X sell · F speed · T target · V turret cam · Esc
                   pause
                 </p>
               </div>
@@ -668,6 +718,23 @@ export function TowerDefense() {
                     <Crosshair className="size-3.5 text-fg-muted" />
                     Target: {TARGET_MODE_LABEL[selectedTargetMode]}
                     <span className="ml-0.5 text-[10px] text-fg-subtle">(T)</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={snap.fpv}
+                    aria-label={snap.fpv ? "Exit turret cam" : "Turret cam"}
+                    disabled={!selected}
+                    onClick={toggleFpv}
+                    className={[
+                      "mt-1.5 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border text-xs font-medium transition sm:mt-2",
+                      snap.fpv
+                        ? "border-accent bg-accent text-accent-fg"
+                        : "border-border bg-bg-subtle hover:bg-bg-elevated",
+                    ].join(" ")}
+                  >
+                    <Eye className="size-3.5" />
+                    {snap.fpv ? "Exit turret cam" : "Turret cam"}
+                    <span className="ml-0.5 text-[10px] opacity-70">(V)</span>
                   </button>
                   <div className="mt-2 flex gap-2 sm:mt-2.5">
                     <button
@@ -966,6 +1033,10 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               <li>
                 <strong className="text-fg">T</strong> — cycle targeting on the selected tower:
                 First, Strong, Close, Last.
+              </li>
+              <li>
+                <strong className="text-fg">V</strong> — enter the selected tower’s turret cam
+                (first-person). Drag to look, Esc or V to exit. Minimap stays in the corner.
               </li>
               <li>
                 Between waves, a <strong className="text-fg">wave preview</strong> lists enemy
