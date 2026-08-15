@@ -5,7 +5,6 @@ import {
   ENEMIES,
   MATCHUP,
   ROWS,
-  SELL_REFUND,
   START_GOLD,
   START_LIVES,
   TOTAL_LEVELS,
@@ -17,6 +16,7 @@ import {
   levelClearBonus,
   levelScale,
   scaleWavesForLevel,
+  sellRefundFor,
   upgradeCost,
   MATCHUP_HINT,
 } from "./config";
@@ -92,6 +92,7 @@ export class GameEngine {
   fpvLookYaw = 0;
   fpvLookPitch = 0;
   fpvDragging = false;
+  sfx: string[] = [];
 
   pathCells: Array<[number, number]> = [];
   pathPoints: Vec2[] = [];
@@ -179,7 +180,7 @@ export class GameEngine {
     this.selectedTowerId = null;
     this.placement = null;
     this.score = 0;
-    this.message = `Level 1 — place towers, then start wave 1.`;
+    this.message = `Level 1 — place a tower beside the road, then start wave 1. Towers stay forever.`;
     this.messageTimer = 4;
     this.spawnQueue = [];
     this.waveTime = 0;
@@ -249,9 +250,21 @@ export class GameEngine {
     this.fpv = false;
 
     this.setMessage(
-      `The front shifts — ${this.coveringCount} covering · ${stranded} off-path · +${bonus + resupply}g`,
+      `The front shifts — ${this.coveringCount} covering · ${stranded} inland · +${bonus + resupply}g`,
       6,
     );
+    this.playSfx("shift");
+  }
+
+  consumeSfx(): string[] {
+    const out = this.sfx;
+    this.sfx = [];
+    return out;
+  }
+
+  private playSfx(name: string) {
+    this.sfx.push(name);
+    if (this.sfx.length > 14) this.sfx.shift();
   }
 
   private refreshTowerCoverage() {
@@ -412,7 +425,9 @@ export class GameEngine {
     cell.occupied = true;
     this.selectedTowerId = tower.id;
     this.placement = null;
+    this.refreshTowerCoverage();
     this.burst(pos.x, pos.y, def.color, 8);
+    this.playSfx("place");
     return true;
   }
 
@@ -500,14 +515,11 @@ export class GameEngine {
   sellSelected(): boolean {
     const t = this.getSelectedTower();
     if (!t || this.phase !== "playing") return false;
-    const def = TOWERS[t.kind];
-    let invested = def.tiers[0]!.cost;
-    for (let i = 1; i < t.tier; i++) {
-      invested += upgradeCost(t.kind, i) ?? def.tiers[i]!.cost;
-    }
-    const refund = Math.floor(invested * SELL_REFUND);
+    const refund = sellRefundFor(t.kind, t.tier);
     this.gold += refund;
-    this.cells[t.row]![t.col]!.occupied = false;
+    const cell = this.cells[t.row]![t.col]!;
+    cell.occupied = false;
+    if (!cell.path) cell.buildable = true;
     this.towers = this.towers.filter((x) => x.id !== t.id);
     this.selectedTowerId = null;
     this.fpv = false;
@@ -575,7 +587,7 @@ export class GameEngine {
     for (const b of def.innateWeakness) {
       buffs.push({ id: b, remaining: 9999, permanent: true });
     }
-    if (spawnBuff) {
+    if (spawnBuff && !buffs.some((b) => b.id === spawnBuff)) {
       buffs.push({
         id: spawnBuff,
         remaining: spawnBuffDuration ?? BUFFS[spawnBuff].duration,
@@ -636,11 +648,16 @@ export class GameEngine {
       // Armor cracked: pull weak matchups most of the way back toward 1.0
       mul = mul + (1 - mul) * 0.62;
     }
+    const seen = new Set<BuffId>();
     for (const b of enemy.buffs) {
+      if (seen.has(b.id)) continue;
+      seen.add(b.id);
       const def = BUFFS[b.id];
-      if (def.damageTakenMul) mul *= def.damageTakenMul;
+      if (def.damageTakenMul && b.id !== "shred") mul *= def.damageTakenMul;
+      if (b.id === "shred") mul *= def.damageTakenMul ?? 1;
       if (def.resistElements?.includes(element) && def.resistMul) {
-        mul *= def.resistMul;
+        const superEffective = MATCHUP[element][enemy.armor] >= 1.4;
+        if (!superEffective) mul *= def.resistMul;
       }
       if (def.weakElements) {
         if (def.weakElements.includes(element) && def.weakMul) mul *= def.weakMul;
@@ -709,6 +726,9 @@ export class GameEngine {
       }
       if (best) best.kills += 1;
       this.burst(enemy.x, enemy.y, ENEMIES[enemy.kind].color, 14);
+      this.playSfx(ENEMIES[enemy.kind].isBoss ? "bossKill" : "kill");
+    } else {
+      this.playSfx(enemy.buffs.some((b) => b.id === "shred") ? "shred" : "hit");
     }
   }
 
@@ -835,6 +855,7 @@ export class GameEngine {
       chainBuffChance: tier.chainBuffChance,
       chainBuffDuration: tier.chainBuffDuration,
     });
+    this.playSfx("fire");
   }
 
   private impactProjectile(p: Projectile, hit: Enemy | null) {
@@ -852,6 +873,17 @@ export class GameEngine {
         if (dist2(ox, oy, e.x, e.y) <= r2) targets.push(e);
       }
       this.burst(ox, oy, p.color, 10);
+      this.particles.push({
+        x: ox,
+        y: oy,
+        vx: 0,
+        vy: 0,
+        life: 0.28,
+        maxLife: 0.28,
+        color: p.color,
+        size: p.splash,
+        kind: "ring",
+      });
     }
 
     for (const e of targets) {
@@ -919,6 +951,7 @@ export class GameEngine {
   }
 
   private burst(x: number, y: number, color: string, n: number) {
+    if (this.particles.length > 180) this.particles.splice(0, this.particles.length - 140);
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const s = 40 + Math.random() * 80;
@@ -944,10 +977,7 @@ export class GameEngine {
     this.animTime += cap;
 
     if (this.phase === "levelclear") {
-      this.levelClearTimer -= cap;
-      if (this.levelClearTimer <= 0) {
-        this.continueAfterLevelClear();
-      }
+      // Wait for the player — auto-skip hid the new path.
       continue;
     }
 
@@ -1014,6 +1044,7 @@ export class GameEngine {
         this.lives = Math.max(0, this.lives - leakCost);
         this.shake = isBoss ? 0.55 : 0.35;
         this.burst(e.x, e.y, "#c45c5c", isBoss ? 18 : 10);
+        this.playSfx("leak");
         if (this.lives <= 0) {
           this.lives = 0;
           this.phase = "lost";
@@ -1091,13 +1122,15 @@ export class GameEngine {
         if (this.level >= TOTAL_LEVELS) {
           this.phase = "won";
           this.setMessage("All 10 levels cleared. Bastion stands.", 6);
+          this.playSfx("win");
         } else {
           this.phase = "levelclear";
-          this.levelClearTimer = 2.8;
-          this.setMessage(`Level ${this.level} cleared! Next map incoming…`, 3);
+          this.setMessage(`Level ${this.level} cleared! Read the new front, then continue.`);
+          this.playSfx("clear");
         }
       } else {
         this.setMessage(`Wave clear! +${waveDef.bonusGold}g — prep next.`);
+        this.playSfx("wave");
       }
     }
 
@@ -1129,10 +1162,13 @@ export class GameEngine {
 
     ctx.save();
     ctx.clearRect(0, 0, viewW, viewH);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
     const g = ctx.createLinearGradient(0, 0, 0, viewH);
-    g.addColorStop(0, "#0c0c0e");
-    g.addColorStop(1, "#080809");
+    g.addColorStop(0, "#10141a");
+    g.addColorStop(0.55, "#0c1014");
+    g.addColorStop(1, "#0a0c10");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, viewW, viewH);
 
@@ -1177,17 +1213,26 @@ export class GameEngine {
         const y = r * CELL;
         const h = ((c * 17 + r * 31) >>> 0) % 5;
         if (cell.path) {
-          ctx.fillStyle = h < 2 ? "#2a2318" : h < 4 ? "#32291c" : "#2e2619";
+          ctx.fillStyle = ["#4a3c2a", "#534432", "#463828", "#4e4030", "#3f3426"][h]!;
+        } else if (cell.occupied) {
+          ctx.fillStyle = ["#1a1e24", "#181c22", "#1c2026", "#171b21", "#1b1f25"][h]!;
         } else {
-          const moss = ["#12161a", "#14181c", "#161a1e", "#13171b", "#15191d"][h]!;
-          ctx.fillStyle = moss;
+          ctx.fillStyle = ["#1c242c", "#1e262e", "#222a32", "#1a222a", "#202830"][h]!;
         }
         ctx.fillRect(x, y, CELL, CELL);
-        if (!cell.path && cell.buildable) {
-          ctx.fillStyle = "rgba(90, 140, 110, 0.045)";
-          ctx.fillRect(x + 3, y + 3, CELL - 6, CELL - 6);
-          ctx.strokeStyle = "rgba(255,255,255,0.035)";
+        if (!cell.path) {
+          ctx.strokeStyle = "rgba(8,10,14,0.55)";
           ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+          ctx.strokeStyle = "rgba(180,200,220,0.05)";
+          ctx.beginPath();
+          ctx.moveTo(x + 1, y + CELL - 1);
+          ctx.lineTo(x + 1, y + 1);
+          ctx.lineTo(x + CELL - 1, y + 1);
+          ctx.stroke();
+        }
+        if (!cell.path && cell.buildable && !cell.occupied) {
+          ctx.fillStyle = "rgba(120, 170, 150, 0.06)";
+          ctx.fillRect(x + 4, y + 4, CELL - 8, CELL - 8);
         }
       }
     }
@@ -1217,23 +1262,28 @@ export class GameEngine {
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = "#3a3024";
-    ctx.lineWidth = CELL * 0.84;
-    ctx.beginPath();
-    for (let i = 0; i < this.pathPoints.length; i++) {
-      const p = this.pathPoints[i]!;
-      if (i === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
-    }
+    const drawLane = () => {
+      ctx.beginPath();
+      for (let i = 0; i < this.pathPoints.length; i++) {
+        const p = this.pathPoints[i]!;
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+    };
+    ctx.strokeStyle = "#2a2118";
+    ctx.lineWidth = CELL * 0.72;
+    drawLane();
     ctx.stroke();
-    ctx.strokeStyle = "#4a3e2e";
-    ctx.lineWidth = CELL * 0.52;
+    ctx.strokeStyle = "#6a5840";
+    ctx.lineWidth = CELL * 0.46;
+    drawLane();
     ctx.stroke();
-    ctx.strokeStyle = "rgba(212,196,160,0.16)";
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([6, 8]);
+    // Aether vein toward the keep — reads as the lane without highway dashes
+    const pulse = this.frontShift > 0 ? 0.28 + 0.2 * Math.sin(this.animTime * 7) : 0.14;
+    ctx.strokeStyle = `rgba(160, 200, 220, ${pulse})`;
+    ctx.lineWidth = 2.2;
+    drawLane();
     ctx.stroke();
-    ctx.setLineDash([]);
     ctx.restore();
   }
 
@@ -1275,151 +1325,75 @@ export class GameEngine {
   }
 
   private drawSpawn(ctx: CanvasRenderingContext2D, pos: Vec2) {
-    const t = this.animTime;
-    const pulse = 0.5 + 0.5 * Math.sin(t * 3.2);
-    const pulse2 = 0.5 + 0.5 * Math.sin(t * 3.2 + 1.2);
-
+    const pulse = 0.5 + 0.5 * Math.sin(this.animTime * 3.2);
     ctx.save();
     ctx.translate(pos.x, pos.y);
 
-    const glow = ctx.createRadialGradient(0, 0, 4, 0, 0, 34);
-    glow.addColorStop(0, `rgba(196, 92, 92, ${0.45 + pulse * 0.2})`);
-    glow.addColorStop(0.55, `rgba(196, 92, 92, ${0.18 + pulse * 0.1})`);
+    const glow = ctx.createRadialGradient(0, 0, 4, 0, 0, 36);
+    glow.addColorStop(0, `rgba(196, 92, 92, ${0.4 + pulse * 0.18})`);
     glow.addColorStop(1, "rgba(196, 92, 92, 0)");
     ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(0, 0, 34, 0, Math.PI * 2);
+    ctx.arc(0, 0, 36, 0, Math.PI * 2);
     ctx.fill();
-
-    ctx.strokeStyle = `rgba(232, 120, 110, ${0.55 + pulse * 0.35})`;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(0, 0, 16 + pulse * 6, 0, Math.PI * 2);
-    ctx.stroke();
-
-    ctx.strokeStyle = `rgba(196, 92, 92, ${0.25 + pulse2 * 0.25})`;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(0, 0, 22 + pulse2 * 5, 0, Math.PI * 2);
-    ctx.stroke();
-
-    ctx.fillStyle = "#2a1212";
-    ctx.beginPath();
-    ctx.arc(0, 0, 13, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#e07a6e";
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-
-    ctx.fillStyle = `rgba(232, 140, 130, ${0.75 + pulse * 0.25})`;
-    for (let i = 0; i < 3; i++) {
-      const ox = -4 + i * 5;
-      ctx.beginPath();
-      ctx.moveTo(ox - 2, -6);
-      ctx.lineTo(ox + 4, 0);
-      ctx.lineTo(ox - 2, 6);
-      ctx.lineTo(ox, 0);
-      ctx.closePath();
-      ctx.fill();
-    }
 
     const portal = getSprite("spawn");
     if (portal) {
-      ctx.drawImage(portal, -22, -22, 44, 44);
+      const s = 46;
+      ctx.drawImage(portal, Math.round(-s / 2), Math.round(-s / 2), s, s);
+    } else {
+      ctx.fillStyle = "#2a1212";
+      ctx.beginPath();
+      ctx.arc(0, 0, 13, 0, Math.PI * 2);
+      ctx.fill();
     }
 
-    this.drawLabelPill(ctx, 0, -30, "SPAWN", "#c45c5c", "#1a0c0c");
-
-    ctx.fillStyle = "rgba(196, 92, 92, 0.85)";
-    ctx.font = "600 8px Segoe UI, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("ENEMY ENTRY", 0, 32);
-
+    this.drawLabelPill(ctx, 0, -32, "SPAWN", "#c45c5c", "#1a0c0c");
     ctx.restore();
   }
 
   private drawBase(ctx: CanvasRenderingContext2D, pos: Vec2) {
-    const t = this.animTime;
-    const pulse = 0.5 + 0.5 * Math.sin(t * 2.4);
+    const pulse = 0.5 + 0.5 * Math.sin(this.animTime * 2.4);
     const danger = this.lives <= 5;
+    const accent = danger ? "#c45c5c" : "#c8d0dc";
 
     ctx.save();
     ctx.translate(pos.x, pos.y);
 
-    const ringA = danger ? 200 : 180;
-    const ringB = danger ? 100 : 200;
-    const ringC = danger ? 100 : 220;
-    const accent = danger ? "#c45c5c" : "#c8d0dc";
-    const accentDim = danger ? "#7a3030" : "#6a7588";
-
-    const glow = ctx.createRadialGradient(0, 0, 6, 0, 0, 38);
-    glow.addColorStop(0, `rgba(${ringA}, ${ringB}, ${ringC}, ${0.4 + pulse * 0.15})`);
-    glow.addColorStop(0.5, `rgba(${ringA}, ${ringB}, ${ringC}, 0.14)`);
-    glow.addColorStop(1, `rgba(${ringA}, ${ringB}, ${ringC}, 0)`);
+    const glow = ctx.createRadialGradient(0, 0, 6, 0, 0, 40);
+    glow.addColorStop(0, danger
+      ? `rgba(200, 100, 100, ${0.38 + pulse * 0.15})`
+      : `rgba(160, 200, 220, ${0.32 + pulse * 0.12})`);
+    glow.addColorStop(1, "rgba(160, 200, 220, 0)");
     ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(0, 0, 38, 0, Math.PI * 2);
+    ctx.arc(0, 0, 40, 0, Math.PI * 2);
     ctx.fill();
-
-    for (let i = 3; i >= 1; i--) {
-      const r = 12 + i * 6 + pulse * 1.5;
-      ctx.strokeStyle =
-        i === 1
-          ? accent
-          : `rgba(${ringA}, ${ringB}, ${ringC}, ${0.25 + i * 0.12})`;
-      ctx.lineWidth = i === 1 ? 2.5 : 1.75;
-      ctx.beginPath();
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = "#1a1c22";
-    ctx.beginPath();
-    ctx.moveTo(0, -16);
-    ctx.lineTo(14, -4);
-    ctx.lineTo(14, 12);
-    ctx.lineTo(-14, 12);
-    ctx.lineTo(-14, -4);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 2;
-    ctx.stroke();
 
     const keep = getSprite("base");
     if (keep) {
-      ctx.drawImage(keep, -24, -28, 48, 48);
+      const s = 50;
+      ctx.drawImage(keep, Math.round(-s / 2), Math.round(-s / 2 - 4), s, s);
+    } else {
+      ctx.fillStyle = "#1a1c22";
+      ctx.fillRect(-14, -12, 28, 24);
     }
 
-    ctx.fillStyle = accentDim;
-    for (const bx of [-10, -3, 4]) {
-      ctx.fillRect(bx, -18, 6, 5);
+    this.drawLabelPill(
+      ctx,
+      0,
+      -36,
+      danger ? `BASE  ${this.lives}` : "BASE",
+      accent,
+      danger ? "#1a0c0c" : "#0e1014",
+    );
+    if (!danger) {
+      ctx.fillStyle = "rgba(180, 195, 215, 0.85)";
+      ctx.font = "700 9px Segoe UI, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(this.lives), 0, 30);
     }
-
-    ctx.fillStyle = accent;
-    ctx.beginPath();
-    ctx.moveTo(0, -6);
-    ctx.lineTo(7, -1);
-    ctx.lineTo(7, 5);
-    ctx.lineTo(0, 10);
-    ctx.lineTo(-7, 5);
-    ctx.lineTo(-7, -1);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = "#0c0c0e";
-    ctx.font = "700 8px Segoe UI, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(this.lives), 0, 2);
-
-    this.drawLabelPill(ctx, 0, -36, "BASE", accent, danger ? "#1a0c0c" : "#0e1014");
-
-    ctx.fillStyle = danger ? "rgba(196, 92, 92, 0.9)" : "rgba(180, 195, 215, 0.85)";
-    ctx.font = "600 8px Segoe UI, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(danger ? "CRITICAL" : "DEFEND HERE", 0, 34);
 
     ctx.restore();
   }
@@ -1485,17 +1459,23 @@ export class GameEngine {
     const def = TOWERS[this.placement];
     const range = def.tiers[0]!.range;
     ctx.save();
-    ctx.globalAlpha = 0.45;
+    ctx.globalAlpha = 0.4;
     ctx.strokeStyle = ok ? def.color : "#c45c5c";
     ctx.fillStyle = ok ? def.color + "22" : "#c45c5c22";
     ctx.beginPath();
     ctx.arc(pos.x, pos.y, range, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = ok ? def.color : "#c45c5c";
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.globalAlpha = ok ? 0.7 : 0.35;
+    const spr = towerSprite(this.placement);
+    if (spr) {
+      ctx.drawImage(spr, Math.round(pos.x - 18), Math.round(pos.y - 22), 36, 36);
+    } else {
+      ctx.fillStyle = ok ? def.color : "#c45c5c";
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -1504,40 +1484,30 @@ export class GameEngine {
     ctx.save();
     ctx.translate(t.x, t.y);
 
-    if (this.frontShift > 0) {
-      const pulse = 0.45 + 0.55 * Math.sin(this.animTime * 6);
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.beginPath();
+    ctx.ellipse(0, 16, 12, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (this.frontShift > 0 || !t.covering) {
+      const pulse = this.frontShift > 0 ? 0.45 + 0.55 * Math.sin(this.animTime * 6) : 0.55;
       ctx.strokeStyle = t.covering
         ? `rgba(90, 158, 111, ${0.35 + pulse * 0.5})`
-        : `rgba(212, 160, 64, ${0.35 + pulse * 0.5})`;
-      ctx.lineWidth = 3;
+        : `rgba(212, 160, 64, ${0.4 + pulse * 0.45})`;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.arc(0, 0, 22 + pulse * 4, 0, Math.PI * 2);
+      ctx.arc(0, 0, 21 + pulse * 3, 0, Math.PI * 2);
       ctx.stroke();
     }
-
-    for (let layer = 0; layer < t.tier; layer++) {
-      const r = 16 + layer * 3;
-      ctx.strokeStyle = layer === t.tier - 1 ? def.color : def.colorDim;
-      ctx.lineWidth = 2;
-      ctx.globalAlpha = 0.28 + layer * 0.18;
-      ctx.beginPath();
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
 
     const sprite = towerSprite(t.kind);
     if (sprite) {
       const s = 38 + t.tier * 2;
-      ctx.drawImage(sprite, -s / 2, -s / 2 - 4, s, s);
+      ctx.drawImage(sprite, Math.round(-s / 2), Math.round(-s / 2 - 4), s, s);
     } else {
-      ctx.fillStyle = "#1c1c22";
-      ctx.beginPath();
-      ctx.arc(0, 0, 12, 0, Math.PI * 2);
-      ctx.fill();
       ctx.fillStyle = def.color;
       ctx.beginPath();
-      ctx.arc(0, 0, 8, 0, Math.PI * 2);
+      ctx.arc(0, 0, 10, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -1549,12 +1519,12 @@ export class GameEngine {
       ctx.stroke();
     }
 
-    if (this.frontShift > 0 && !t.covering) {
+    if (!t.covering) {
       ctx.fillStyle = "rgba(212,160,64,0.95)";
       ctx.font = "700 8px Segoe UI, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("OFF PATH", 0, 24);
+      ctx.fillText("INLAND", 0, 24);
     }
 
     ctx.restore();
@@ -1575,29 +1545,22 @@ export class GameEngine {
     ctx.translate(e.x, e.y);
     if (e.hitFlash > 0) ctx.globalAlpha = 0.55 + Math.sin(e.hitFlash * 40) * 0.45;
 
-    const hasStrength = e.buffs.some((b) => BUFFS[b.id].polarity === "strength");
-    const hasWeakness = e.buffs.some((b) => BUFFS[b.id].polarity === "weakness");
-    if (hasStrength) {
-      ctx.strokeStyle = "rgba(90,158,111,0.55)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(0, 0, e.radius + 6, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    if (hasWeakness) {
-      ctx.strokeStyle = "rgba(196,92,92,0.55)";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath();
-      ctx.arc(0, 0, e.radius + 8, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
+    const size = def.isBoss ? 46 : e.radius * 2.8;
+    ctx.fillStyle = "rgba(0,0,0,0.32)";
+    ctx.beginPath();
+    ctx.ellipse(0, size * 0.38, size * 0.28, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
 
     const sprite = enemySprite(e.kind);
-    const size = def.isBoss ? 46 : e.radius * 2.8;
     if (sprite) {
-      ctx.drawImage(sprite, -size / 2, -size / 2 - 2, size, size);
+      const bob = Math.sin(this.animTime * 8 + e.id) * 1.1;
+      ctx.drawImage(
+        sprite,
+        Math.round(-size / 2),
+        Math.round(-size / 2 - 2 + bob),
+        size,
+        size,
+      );
     } else {
       ctx.fillStyle = e.hitFlash > 0.05 ? "#f4f4f5" : def.color;
       ctx.beginPath();
@@ -1605,11 +1568,38 @@ export class GameEngine {
       ctx.fill();
     }
 
-    ctx.strokeStyle = TOWERS[e.armor]?.color ?? "#a1a1aa";
-    ctx.lineWidth = 2;
+    // Armor pip — not a full-body ring
+    const armor = TOWERS[e.armor]?.color ?? "#a1a1aa";
+    ctx.fillStyle = armor;
     ctx.beginPath();
-    ctx.arc(0, 0, size / 2 - 1, 0, Math.PI * 2);
+    ctx.arc(size * 0.32, -size * 0.32, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(8,8,10,0.7)";
+    ctx.lineWidth = 1;
     ctx.stroke();
+
+    const shredded = e.buffs.some((b) => b.id === "shred");
+    if (shredded) {
+      ctx.strokeStyle = "#d4b06a";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(size * 0.32 - 3, -size * 0.32 - 3);
+      ctx.lineTo(size * 0.32 + 3, -size * 0.32 + 3);
+      ctx.moveTo(size * 0.32 + 3, -size * 0.32 - 3);
+      ctx.lineTo(size * 0.32 - 3, -size * 0.32 + 3);
+      ctx.stroke();
+    }
+
+    const hasStrength = e.buffs.some((b) => BUFFS[b.id].polarity === "strength");
+    const hasWeakness = e.buffs.some((b) => BUFFS[b.id].polarity === "weakness");
+    if (hasStrength) {
+      ctx.fillStyle = "#5a9e6f";
+      ctx.fillRect(-size * 0.42, -size * 0.42, 5, 5);
+    }
+    if (hasWeakness) {
+      ctx.fillStyle = "#c45c5c";
+      ctx.fillRect(-size * 0.42 + (hasStrength ? 6 : 0), -size * 0.42, 5, 5);
+    }
 
     const bw = Math.max(22, size * 0.85);
     const bh = 3;
@@ -1620,7 +1610,7 @@ export class GameEngine {
     ctx.fillRect(-bw / 2, -size / 2 - 8, bw * pct, bh);
 
     if (e.slowTimer > 0) {
-      ctx.fillStyle = "rgba(91,159,212,0.7)";
+      ctx.fillStyle = "rgba(91,159,212,0.75)";
       ctx.beginPath();
       ctx.arc(size / 2 - 4, size / 2 - 4, 3, 0, Math.PI * 2);
       ctx.fill();
@@ -1655,26 +1645,73 @@ export class GameEngine {
 
   private drawProjectile(ctx: CanvasRenderingContext2D, p: Projectile) {
     ctx.save();
+    const ang = Math.atan2(p.vy, p.vx);
+    ctx.translate(p.x, p.y);
+    ctx.rotate(ang);
     ctx.fillStyle = p.color;
     ctx.shadowColor = p.color;
-    ctx.shadowBlur = 8;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 0.35;
-    ctx.beginPath();
-    ctx.arc(p.x - p.vx * 0.02, p.y - p.vy * 0.02, p.radius * 0.7, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.shadowBlur = 10;
+    if (p.element === "ember") {
+      ctx.beginPath();
+      ctx.moveTo(10, 0);
+      ctx.lineTo(-8, 4);
+      ctx.lineTo(-5, 0);
+      ctx.lineTo(-8, -4);
+      ctx.closePath();
+      ctx.fill();
+    } else if (p.element === "frost") {
+      ctx.beginPath();
+      ctx.moveTo(9, 0);
+      ctx.lineTo(0, 4);
+      ctx.lineTo(-8, 0);
+      ctx.lineTo(0, -4);
+      ctx.closePath();
+      ctx.fill();
+    } else if (p.element === "volt") {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = p.color;
+      ctx.beginPath();
+      ctx.moveTo(-10, 0);
+      ctx.lineTo(-4, -4);
+      ctx.lineTo(1, 3);
+      ctx.lineTo(10, 0);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(0, 0, p.radius + 1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#2a2e34";
+      ctx.beginPath();
+      ctx.arc(2, 0, p.radius * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 
   private drawParticle(ctx: CanvasRenderingContext2D, p: Particle) {
     ctx.save();
-    ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+    const a = Math.max(0, p.life / p.maxLife);
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = p.color;
     ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-    ctx.fill();
+    if (p.kind === "ring") {
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * (1.15 - a * 0.4), 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (p.kind === "shard") {
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - p.size);
+      ctx.lineTo(p.x + p.size * 0.5, p.y);
+      ctx.lineTo(p.x, p.y + p.size);
+      ctx.lineTo(p.x - p.size * 0.5, p.y);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 

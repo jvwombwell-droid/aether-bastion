@@ -220,6 +220,7 @@ export interface Particle {
   maxLife: number;
   color: string;
   size: number;
+  kind?: "spark" | "ring" | "shard";
 }
 
 export interface FloatingText {

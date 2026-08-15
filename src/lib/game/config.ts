@@ -544,9 +544,18 @@ export function levelClearBonus(level: number): number {
   return Math.round(110 * Math.pow(1.38, level - 1));
 }
 
-/** Extra gold when the path moves — more if towers were left off the new line. */
-export function frontShiftResupply(level: number, stranded: number): number {
-  return Math.round(45 + level * 16 + stranded * 24);
+/** Flat gold when the path moves. Inland towers are not paid extra. */
+export function frontShiftResupply(level: number, _stranded = 0): number {
+  return Math.round(45 + level * 16);
+}
+
+/** Gold returned if this tower is sold at its current tier. */
+export function sellRefundFor(kind: Element, tier: number): number {
+  let invested = TOWERS[kind].tiers[0]!.cost;
+  for (let i = 1; i < tier; i++) {
+    invested += upgradeCost(kind, i) ?? TOWERS[kind].tiers[i]!.cost;
+  }
+  return Math.floor(invested * SELL_REFUND);
 }
 
 /** Upgrade to next tier — 1.6× listed cost (still steep, less punishing than 2×). */

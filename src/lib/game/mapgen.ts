@@ -96,7 +96,7 @@ function windyPath(
       h = Math.imul(h, 16777619);
     }
     const u = ((h >>> 0) % 1000) / 1000;
-    return 1 + u * wind * 4 + rng() * wind * 0.15;
+    return 1 + u * wind * 4;
   };
 
   const dist = new Map<string, number>();
@@ -431,10 +431,48 @@ function emergencyPath(
     for (let j = i === 0 ? 0 : 1; j < seg.length; j++) full.push(seg[j]!);
   }
   const path = dedupeConsecutive(full);
-  return (
-    fitCoverage(path, blocked, rng, minLen, maxLen) ??
-    (path.length >= 2 ? path.slice(0, Math.min(path.length, maxLen + 5)) : [spawn, base])
-  );
+  const fitted = fitCoverage(path, blocked, rng, minLen, maxLen);
+  if (fitted && fitted.length >= 2) return fitted;
+  const direct = windyPath(spawn, base, blocked, rng, 0.05);
+  if (direct && direct.length >= 2) return dedupeConsecutive(direct);
+  return gridWalk(spawn, base, blocked) ?? [spawn, base];
+}
+
+/** Guaranteed 4-neighbor walk from spawn to base. Never a 2-point lerp. */
+function gridWalk(
+  start: [number, number],
+  goal: [number, number],
+  blocked: Set<string>,
+): Array<[number, number]> | null {
+  const sk = key(start[0], start[1]);
+  const gk = key(goal[0], goal[1]);
+  if (blocked.has(sk) || blocked.has(gk)) return null;
+  const parent = new Map<string, string | null>();
+  parent.set(sk, null);
+  const q: Array<[number, number]> = [start];
+  while (q.length) {
+    const [c, r] = q.shift()!;
+    if (key(c, r) === gk) break;
+    for (const [dc, dr] of DIRS) {
+      const nc = c + dc;
+      const nr = r + dr;
+      if (!inBounds(nc, nr)) continue;
+      const nk = key(nc, nr);
+      if (blocked.has(nk) || parent.has(nk)) continue;
+      parent.set(nk, key(c, r));
+      q.push([nc, nr]);
+    }
+  }
+  if (!parent.has(gk)) return null;
+  const path: Array<[number, number]> = [];
+  let cur: string | null = gk;
+  while (cur) {
+    const [cs, rs] = cur.split(",").map(Number) as [number, number];
+    path.push([cs, rs]);
+    cur = parent.get(cur) ?? null;
+  }
+  path.reverse();
+  return path;
 }
 
 export function pathCellsToPoints(cells: Array<[number, number]>) {
