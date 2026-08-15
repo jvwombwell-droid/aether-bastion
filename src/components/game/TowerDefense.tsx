@@ -29,6 +29,7 @@ import {
   TOTAL_LEVELS,
   TOWERS,
   WAVES_PER_LEVEL,
+  sellRefundFor,
   upgradeCost,
 } from "@/lib/game/config";
 import type {
@@ -82,8 +83,52 @@ function useAudio() {
     [],
   );
 
+  const combat = useCallback((name: string) => {
+    if (!enabledRef.current) return;
+    switch (name) {
+      case "fire":
+        beep(620, 0.035, "square", 0.018);
+        break;
+      case "hit":
+        beep(240, 0.04, "triangle", 0.03);
+        break;
+      case "shred":
+        beep(180, 0.05, "sawtooth", 0.028);
+        break;
+      case "kill":
+        beep(520, 0.05, "triangle", 0.035);
+        setTimeout(() => beep(380, 0.06, "triangle", 0.03), 40);
+        break;
+      case "bossKill":
+        beep(160, 0.12, "sawtooth", 0.04);
+        setTimeout(() => beep(420, 0.1, "triangle", 0.04), 80);
+        break;
+      case "leak":
+        beep(110, 0.14, "sawtooth", 0.045);
+        break;
+      case "wave":
+        beep(360, 0.07, "triangle", 0.04);
+        break;
+      case "clear":
+      case "shift":
+        beep(300, 0.1, "triangle", 0.045);
+        setTimeout(() => beep(440, 0.12, "triangle", 0.04), 90);
+        break;
+      case "win":
+        beep(440, 0.1, "triangle", 0.05);
+        setTimeout(() => beep(554, 0.12, "triangle", 0.05), 100);
+        break;
+      case "place":
+        beep(520, 0.06, "square", 0.03);
+        break;
+      default:
+        break;
+    }
+  }, [beep]);
+
   return {
     beep,
+    combat,
     setEnabled: (v: boolean) => {
       enabledRef.current = v;
     },
@@ -108,6 +153,8 @@ export function TowerDefense() {
   const [showHelp, setShowHelp] = useState(false);
   const [muted, setMuted] = useState(false);
   const audio = useAudio();
+  const audioRef = useRef(audio);
+  audioRef.current = audio;
   const rafRef = useRef(0);
   const lastRef = useRef(0);
   const sizeRef = useRef({ w: 880, h: 560 });
@@ -132,6 +179,7 @@ export function TowerDefense() {
       if (engine.phase === "playing" || engine.phase === "levelclear") {
         const speed = engine.gameSpeed || 1;
         engine.update(dt * speed);
+        for (const name of engine.consumeSfx()) audioRef.current.combat(name);
       }
 
       const { w, h } = sizeRef.current;
@@ -447,10 +495,10 @@ export function TowerDefense() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
         <div
           ref={wrapRef}
-          className="relative min-h-0 flex-1 touch-none bg-bg"
+          className="relative min-h-0 min-w-0 flex-1 touch-none bg-bg"
           style={{ touchAction: "none" }}
         >
           <canvas
@@ -472,14 +520,21 @@ export function TowerDefense() {
 
           {snap.phase === "menu" && (
             <Overlay>
-              <div className="mx-auto max-h-[90dvh] max-w-md overflow-y-auto px-4 py-6 text-center">
+              <div className="mx-auto max-h-[90dvh] max-w-md overflow-y-auto overflow-x-hidden px-4 py-6 text-center">
+                <img
+                  src="/sprites/base.png"
+                  alt=""
+                  width={88}
+                  height={88}
+                  className="mx-auto mb-2 size-20 object-contain sm:size-[88px]"
+                />
                 <p className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-fg-subtle">
                   Tower Defense
                 </p>
                 <h2 className="mb-3 text-3xl font-semibold tracking-tight text-fg sm:text-4xl">
                   Aether Bastion
                 </h2>
-                <p className="mb-6 text-sm leading-relaxed text-fg-muted">
+                <p className="mb-6 text-pretty text-sm leading-relaxed text-fg-muted">
                   Survive <strong className="font-medium text-fg">{TOTAL_LEVELS} levels</strong> of{" "}
                   {WAVES_PER_LEVEL} waves each. Every level spawns a{" "}
                   <strong className="font-medium text-fg">wild randomized path</strong>. Towers you place are permanent
@@ -498,11 +553,17 @@ export function TowerDefense() {
                       key={k}
                       className="rounded-[var(--radius-sm)] border border-border bg-bg-subtle/80 p-2"
                     >
-                      <div
-                        className="mb-1 text-xs font-semibold"
-                        style={{ color: ELEMENT_COLOR[k] }}
-                      >
-                        {ELEMENT_LABEL[k]}
+                      <div className="mb-1 flex items-center gap-1.5">
+                        <img
+                          src={`/sprites/${k}.png`}
+                          alt=""
+                          width={22}
+                          height={22}
+                          className="size-[22px] shrink-0 object-contain"
+                        />
+                        <span className="text-xs font-semibold" style={{ color: ELEMENT_COLOR[k] }}>
+                          {ELEMENT_LABEL[k]}
+                        </span>
                       </div>
                       <p className="text-[10px] leading-snug text-fg-subtle">
                         {TOWERS[k].description}
@@ -510,7 +571,7 @@ export function TowerDefense() {
                     </div>
                   ))}
                 </div>
-                <p className="mt-4 text-[11px] text-fg-subtle">
+                <p className="mt-4 text-pretty text-[11px] text-fg-subtle">
                   Keys: 1–4 build · Space wave · U upgrade · X sell · F speed · T target · V turret cam · Esc
                   pause
                 </p>
@@ -532,8 +593,9 @@ export function TowerDefense() {
                 </p>
                 <p className="mb-6 text-sm text-fg-muted">
                   The siege front moves. Your towers stay locked — a new path will
-                  wind around them. Off-path towers get a gold resupply so you can
-                  reinforce the new line.
+                  wind around them. A gold resupply arrives so you can reinforce
+                  the new line. Inland towers keep firing only if the road comes
+                  back into range.
                 </p>
                 <button
                   type="button"
@@ -757,7 +819,7 @@ export function TowerDefense() {
                       className="flex h-10 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border px-3 text-xs font-medium text-fg-muted transition hover:border-danger hover:text-danger disabled:opacity-40"
                     >
                       <Trash2 className="size-3.5" />
-                      Sell
+                      Sell {sellRefundFor(selected.kind, selected.tier)}g
                     </button>
                   </div>
                 </>
@@ -780,13 +842,11 @@ export function TowerDefense() {
               <p className="mb-2 text-[10px] leading-snug text-fg-muted">{MATCHUP_MANTRA}</p>
               <MatchupGrid compact />
               <div className="mt-2 space-y-1 text-[10px] text-fg-subtle">
+                <p>Colored pip on an enemy = its armor.</p>
+                <p>Gold X on the pip = Shred (weak hits land).</p>
                 <p>
-                  <span className="inline-block size-2 rounded-full bg-success align-middle" />{" "}
-                  Green aura = strength buff
-                </p>
-                <p>
-                  <span className="inline-block size-2 rounded-full bg-danger align-middle" />{" "}
-                  Red dashed = weakness
+                  <span className="inline-block size-2 bg-success align-middle" /> strength{" "}
+                  <span className="inline-block size-2 bg-danger align-middle" /> weakness
                 </p>
               </div>
             </div>
