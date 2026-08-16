@@ -42,6 +42,7 @@ import type {
 } from "@/lib/game/types";
 import { TARGET_MODE_LABEL } from "@/lib/game/types";
 import { preloadSprites } from "@/lib/game/sprites";
+import { clearSavedRun, loadSavedRun, writeSavedRun } from "@/lib/game/persist";
 
 const TOWER_ORDER: TowerKind[] = ["ember", "frost", "volt", "iron"];
 const SPEED_OPTIONS: GameSpeed[] = [1, 2, 3];
@@ -152,6 +153,7 @@ export function TowerDefense() {
   const [snap, setSnap] = useState<GameSnapshot>(() => engine.snapshot());
   const [showHelp, setShowHelp] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [hasSave, setHasSave] = useState(false);
   const audio = useAudio();
   const audioRef = useRef(audio);
   audioRef.current = audio;
@@ -159,9 +161,45 @@ export function TowerDefense() {
   const lastRef = useRef(0);
   const sizeRef = useRef({ w: 880, h: 560 });
 
+  const persistNow = useCallback(() => {
+    if (engine.phase === "won" || engine.phase === "lost" || engine.phase === "menu") {
+      clearSavedRun();
+      setHasSave(false);
+      return;
+    }
+    const run = engine.exportRun();
+    if (!run) return;
+    writeSavedRun(run);
+    setHasSave(true);
+  }, [engine]);
+
   const pushSnap = useCallback(() => {
     setSnap(engine.snapshot());
   }, [engine]);
+
+  useEffect(() => {
+    setHasSave(loadSavedRun() !== null);
+  }, []);
+
+  useEffect(() => {
+    if (snap.phase === "won" || snap.phase === "lost") {
+      clearSavedRun();
+      setHasSave(false);
+    }
+  }, [snap.phase]);
+
+  useEffect(() => {
+    const persistIfHidden = () => {
+      if (document.visibilityState === "hidden") persistNow();
+    };
+    const persistOnUnload = () => persistNow();
+    document.addEventListener("visibilitychange", persistIfHidden);
+    window.addEventListener("beforeunload", persistOnUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", persistIfHidden);
+      window.removeEventListener("beforeunload", persistOnUnload);
+    };
+  }, [persistNow]);
 
   useEffect(() => {
     preloadSprites();
@@ -189,14 +227,16 @@ export function TowerDefense() {
     rafRef.current = requestAnimationFrame(loop);
 
     const snapTimer = window.setInterval(() => {
-      if (engine.phase !== "menu") pushSnap();
+      if (engine.phase === "menu") return;
+      pushSnap();
+      if (!engine.waveActive) persistNow();
     }, 120);
 
     return () => {
       cancelAnimationFrame(rafRef.current);
       clearInterval(snapTimer);
     };
-  }, [engine, pushSnap]);
+  }, [engine, persistNow, pushSnap]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -234,10 +274,12 @@ export function TowerDefense() {
         if (engine.phase === "levelclear") {
           engine.continueAfterLevelClear();
           audio.beep(400, 0.08, "triangle", 0.05);
+          persistNow();
           pushSnap();
         } else if (!engine.waveActive && engine.phase === "playing") {
           engine.startWave();
           audio.beep(280, 0.1, "triangle", 0.05);
+          persistNow();
           pushSnap();
         }
       } else if (e.key === "p" || e.key === "P" || e.key === "Escape") {
@@ -247,6 +289,7 @@ export function TowerDefense() {
           return;
         }
         engine.togglePause();
+        persistNow();
         pushSnap();
       } else if (e.key === "v" || e.key === "V") {
         engine.toggleFpv();
@@ -285,21 +328,25 @@ export function TowerDefense() {
         pushSnap();
       } else if (e.key === "u" || e.key === "U") {
         engine.upgradeSelected();
+        persistNow();
         pushSnap();
       } else if (e.key === "x" || e.key === "X") {
         engine.sellSelected();
+        persistNow();
         pushSnap();
       } else if (e.key === "f" || e.key === "F") {
         engine.cycleGameSpeed();
+        persistNow();
         pushSnap();
       } else if (e.key === "t" || e.key === "T") {
         engine.cycleSelectedTargetMode();
+        persistNow();
         pushSnap();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [engine, audio, pushSnap]);
+  }, [engine, audio, persistNow, pushSnap]);
 
   const selected = useMemo(() => {
     if (snap.selectedTowerId == null) return null;
@@ -308,8 +355,19 @@ export function TowerDefense() {
 
   const startGame = () => {
     audio.unlock();
+    clearSavedRun();
+    setHasSave(false);
     engine.reset();
     audio.beep(440, 0.08, "triangle", 0.05);
+    pushSnap();
+  };
+
+  const continueGame = () => {
+    audio.unlock();
+    const saved = loadSavedRun();
+    if (!saved) return;
+    if (!engine.importRun(saved)) return;
+    audio.beep(400, 0.08, "triangle", 0.05);
     pushSnap();
   };
 
@@ -344,6 +402,7 @@ export function TowerDefense() {
         const ok = engine.tryPlace(cell.col, cell.row);
         if (ok) audio.beep(520, 0.07, "square", 0.04);
         else audio.beep(160, 0.08, "sawtooth", 0.03);
+        if (ok) persistNow();
       } else {
         engine.selectAt(cell.col, cell.row);
         audio.beep(320, 0.04, "triangle", 0.03);
@@ -364,40 +423,47 @@ export function TowerDefense() {
     engine.startWave();
     audio.beep(280, 0.1, "triangle", 0.05);
     setTimeout(() => audio.beep(360, 0.1, "triangle", 0.05), 80);
+    persistNow();
     pushSnap();
   };
 
   const upgrade = () => {
     if (engine.upgradeSelected()) audio.beep(600, 0.08, "square", 0.04);
     else audio.beep(140, 0.06);
+    persistNow();
     pushSnap();
   };
 
   const sell = () => {
     if (engine.sellSelected()) audio.beep(220, 0.08);
+    persistNow();
     pushSnap();
   };
 
   const togglePause = () => {
     engine.togglePause();
+    persistNow();
     pushSnap();
   };
 
   const continueLevel = () => {
     engine.continueAfterLevelClear();
     audio.beep(480, 0.1, "triangle", 0.05);
+    persistNow();
     pushSnap();
   };
 
   const setSpeed = (speed: GameSpeed) => {
     engine.setGameSpeed(speed);
     audio.beep(300 + speed * 60, 0.04, "triangle", 0.03);
+    persistNow();
     pushSnap();
   };
 
   const cycleTargetMode = () => {
     engine.cycleSelectedTargetMode();
     audio.beep(360, 0.04, "triangle", 0.03);
+    persistNow();
     pushSnap();
   };
 
@@ -540,13 +606,24 @@ export function TowerDefense() {
                   <strong className="font-medium text-fg">wild randomized path</strong>. Towers you place are permanent
                   forever. Enemies scale hard. Exploit matchups and stack tiers.
                 </p>
-                <button
-                  type="button"
-                  onClick={startGame}
-                  className="inline-flex h-11 min-w-[180px] items-center justify-center rounded-[var(--radius-md)] bg-accent px-6 text-sm font-semibold text-accent-fg transition hover:opacity-90 active:scale-[0.98]"
-                >
-                  Begin Siege
-                </button>
+                <div className="flex flex-col items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={startGame}
+                    className="inline-flex h-11 min-w-[180px] items-center justify-center rounded-[var(--radius-md)] bg-accent px-6 text-sm font-semibold text-accent-fg transition hover:opacity-90 active:scale-[0.98]"
+                  >
+                    Begin Siege
+                  </button>
+                  {hasSave ? (
+                    <button
+                      type="button"
+                      onClick={continueGame}
+                      className="inline-flex h-11 min-w-[180px] items-center justify-center rounded-[var(--radius-md)] border border-border bg-bg-elevated px-6 text-sm font-semibold text-fg transition hover:bg-bg-subtle active:scale-[0.98]"
+                    >
+                      Continue
+                    </button>
+                  ) : null}
+                </div>
                 <div className="mt-6 grid grid-cols-2 gap-2 text-left sm:mt-8 sm:grid-cols-4">
                   {TOWER_ORDER.map((k) => (
                     <div
@@ -653,7 +730,7 @@ export function TowerDefense() {
         </div>
 
         {snap.phase !== "menu" && (
-          <aside className="flex shrink-0 flex-col gap-1.5 border-t border-border bg-bg-elevated p-2 sm:gap-2 sm:p-3 lg:w-[300px] lg:border-t-0 lg:border-l">
+          <aside className="flex max-h-[42dvh] min-h-0 shrink-0 flex-col gap-1.5 overflow-y-auto border-t border-border bg-bg-elevated p-2 sm:gap-2 sm:p-3 lg:h-full lg:max-h-none lg:w-[300px] lg:border-t-0 lg:border-l">
             <div className="flex items-center gap-2">
               {snap.phase === "levelclear" ? (
                 <button

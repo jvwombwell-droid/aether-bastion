@@ -69,12 +69,10 @@ export function CreatedWithGrokBanner() {
   const showRemix = envFlag("VITE_ALLOW_FORKING", false) && projectId.length > 0;
 
   return (
-    <>
-      <div className="h-9 w-full shrink-0" aria-hidden />
-      <div
-        className="fixed top-0 left-0 right-0 z-[100] flex h-9 w-full items-center justify-center gap-4 bg-black px-3 text-[13px] leading-none text-white/90"
-        data-created-with-grok-banner
-      >
+    <div
+      className="fixed top-0 left-0 right-0 z-[100] flex h-9 w-full items-center justify-center gap-4 bg-black px-3 text-[13px] leading-none text-white/90"
+      data-created-with-grok-banner
+    >
         <a
           href="https://grok.com?m=build"
           target="_blank"
@@ -96,7 +94,6 @@ export function CreatedWithGrokBanner() {
             Remix
           </a>
         ) : null}
-      </div>
-    </>
+    </div>
   );
 }

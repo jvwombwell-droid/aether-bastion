@@ -1,5 +1,4 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
-import { AuthProvider } from "@/lib/auth/provider";
 import { CreatedWithGrokBanner } from "@/components/created-with-grok-banner";
 import appCss from "../styles.css?url";
 
@@ -37,9 +36,7 @@ export const Route = createRootRoute({
       </head>
       <body className="overflow-hidden">
         <CreatedWithGrokBanner />
-        <AuthProvider>
-          <Outlet />
-        </AuthProvider>
+        <Outlet />
         <Scripts />
       </body>
     </html>

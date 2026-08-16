@@ -19,7 +19,11 @@ npm install
 npm run dev
 ```
 
-Open the app (dev server on port 8080).
+Open the app (dev server on port 8080). Between waves, **Continue** resumes a saved run after a refresh.
+
+```bash
+npm test
+```
 
 ## Stack
 

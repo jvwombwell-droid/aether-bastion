@@ -4,6 +4,7 @@ import {
   COLS,
   ENEMIES,
   MATCHUP,
+  MAX_TIER,
   ROWS,
   START_GOLD,
   START_LIVES,
@@ -26,6 +27,8 @@ import {
   levelMapSeed,
   pathCellsToPoints,
 } from "./mapgen";
+import { damageMultiplier } from "./combat";
+import type { SavedRun, SavedTower } from "./persist";
 import { enemySprite, getSprite, towerSprite } from "./sprites";
 import type {
   ActiveBuff,
@@ -42,7 +45,6 @@ import type {
   Projectile,
   TargetMode,
   Tower,
-  TowerKind,
   Vec2,
   WaveDef,
   WavePreview,
@@ -197,6 +199,112 @@ export class GameEngine {
     this.fpvLookYaw = 0;
     this.fpvLookPitch = 0;
     this.fpvDragging = false;
+  }
+
+  exportRun(): SavedRun | null {
+    if (this.phase !== "playing" && this.phase !== "paused" && this.phase !== "levelclear") {
+      return null;
+    }
+    if (this.pathCells.length < 2) return null;
+    const towers: SavedTower[] = this.towers.map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      col: t.col,
+      row: t.row,
+      tier: t.tier,
+      kills: t.kills,
+      targetMode: t.targetMode,
+    }));
+    return {
+      version: 1,
+      nextId,
+      runSeed: this.runSeed,
+      level: this.level,
+      wave: this.wave,
+      phase: this.phase,
+      gold: this.gold,
+      lives: this.lives,
+      score: this.score,
+      gameSpeed: this.gameSpeed,
+      towers,
+      pathCells: this.pathCells.map(([c, r]) => [c, r]),
+    };
+  }
+
+  importRun(saved: SavedRun): boolean {
+    if (saved.pathCells.length < 2) return false;
+    if (saved.level < 1 || saved.level > TOTAL_LEVELS) return false;
+    if (saved.wave < 0 || saved.wave > WAVES_PER_LEVEL) return false;
+
+    const blocked = new Set(saved.towers.map((t) => `${t.col},${t.row}`));
+    for (const [c, r] of saved.pathCells) {
+      if (c < 0 || r < 0 || c >= COLS || r >= ROWS) return false;
+      if (blocked.has(`${c},${r}`)) return false;
+    }
+    for (const t of saved.towers) {
+      if (t.col < 0 || t.row < 0 || t.col >= COLS || t.row >= ROWS) return false;
+      if (t.tier < 1 || t.tier > MAX_TIER) return false;
+    }
+
+    nextId = Math.max(1, Math.floor(saved.nextId));
+    this.runSeed = saved.runSeed >>> 0 || 1;
+    this.level = saved.level;
+    this.wave = saved.wave;
+    this.phase = saved.phase;
+    this.gold = saved.gold;
+    this.lives = saved.lives;
+    this.score = saved.score;
+    this.gameSpeed = saved.gameSpeed;
+    this.pathCells = saved.pathCells.map(([c, r]) => [c, r]);
+    this.pathPoints = pathCellsToPoints(this.pathCells);
+    this.pathLengths = buildPathLengthsFromPoints(this.pathPoints);
+    this.pathTotal = this.pathLengths[this.pathLengths.length - 1] ?? 1;
+    this.levelWaves = scaleWavesForLevel(this.level);
+    this.buildGrid();
+
+    this.towers = [];
+    for (const s of saved.towers) {
+      const pos = cellCenter(s.col, s.row);
+      const cell = this.cells[s.row]![s.col]!;
+      cell.occupied = true;
+      cell.buildable = false;
+      cell.path = false;
+      this.towers.push({
+        id: s.id,
+        kind: s.kind,
+        col: s.col,
+        row: s.row,
+        x: pos.x,
+        y: pos.y,
+        tier: s.tier,
+        cooldown: 0.2,
+        angle: 0,
+        kills: s.kills,
+        targetMode: s.targetMode,
+        covering: true,
+      });
+    }
+    this.refreshTowerCoverage();
+
+    this.enemies = [];
+    this.projectiles = [];
+    this.particles = [];
+    this.floats = [];
+    this.spawnQueue = [];
+    this.waveTime = 0;
+    this.waveActive = false;
+    this.selectedTowerId = null;
+    this.placement = null;
+    this.fpv = false;
+    this.fpvLookYaw = 0;
+    this.fpvLookPitch = 0;
+    this.fpvDragging = false;
+    this.frontShift = 0;
+    this.prevPathPoints = [];
+    this.message = null;
+    this.messageTimer = 0;
+    this.shake = 0;
+    return true;
   }
 
   setGameSpeed(speed: GameSpeed) {
@@ -641,34 +749,6 @@ export class GameEngine {
     return e.speed * mul;
   }
 
-  private damageMultiplier(element: Element, enemy: Enemy): number {
-    let mul = MATCHUP[element][enemy.armor];
-    const shredded = enemy.buffs.some((b) => b.id === "shred");
-    if (shredded && mul < 1) {
-      // Armor cracked: pull weak matchups most of the way back toward 1.0
-      mul = mul + (1 - mul) * 0.62;
-    }
-    const seen = new Set<BuffId>();
-    for (const b of enemy.buffs) {
-      if (seen.has(b.id)) continue;
-      seen.add(b.id);
-      const def = BUFFS[b.id];
-      if (def.damageTakenMul && b.id !== "shred") mul *= def.damageTakenMul;
-      if (b.id === "shred") mul *= def.damageTakenMul ?? 1;
-      if (def.resistElements?.includes(element) && def.resistMul) {
-        const superEffective = MATCHUP[element][enemy.armor] >= 1.4;
-        if (!superEffective) mul *= def.resistMul;
-      }
-      if (def.weakElements) {
-        if (def.weakElements.includes(element) && def.weakMul) mul *= def.weakMul;
-      }
-      if (b.id === "expose" && MATCHUP[element][enemy.armor] >= 1.4 && def.weakMul) {
-        mul *= def.weakMul;
-      }
-    }
-    return mul;
-  }
-
   private applyDamage(
     enemy: Enemy,
     raw: number,
@@ -676,7 +756,7 @@ export class GameEngine {
     opts?: { slow?: number; fromX?: number; fromY?: number },
   ) {
     if (!enemy.alive) return;
-    const mul = this.damageMultiplier(element, enemy);
+    const mul = damageMultiplier(element, enemy);
     const dmg = Math.max(1, Math.round(raw * mul));
     enemy.hp -= dmg;
     enemy.hitFlash = 0.12;
@@ -2008,7 +2088,7 @@ export class GameEngine {
 
     if (tracked) {
       const ed = ENEMIES[tracked.kind];
-      const mul = this.damageMultiplier(cam.kind, tracked);
+      const mul = damageMultiplier(cam.kind, tracked);
       const tag = mul >= 1.4 ? "STRONG" : mul <= 0.65 ? "RESIST" : "HIT";
       ctx.textAlign = "right";
       ctx.fillStyle = "#e4e4e7";
