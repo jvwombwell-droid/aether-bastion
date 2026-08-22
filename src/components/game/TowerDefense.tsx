@@ -608,8 +608,14 @@ export function TowerDefense() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
         <div
           ref={wrapRef}
-          className="relative min-h-0 min-w-0 flex-1 touch-none bg-bg"
-          style={{ touchAction: "none" }}
+          className={[
+            "relative min-h-0 min-w-0 flex-1 bg-bg",
+            snap.phase === "playing" || snap.phase === "paused" ? "touch-none" : "",
+          ].join(" ")}
+          style={{
+            touchAction:
+              snap.phase === "playing" || snap.phase === "paused" ? "none" : "auto",
+          }}
         >
           <canvas
             ref={canvasRef}
@@ -654,8 +660,13 @@ export function TowerDefense() {
                 <div className="flex flex-col items-center gap-2">
                   <button
                     type="button"
-                    onClick={startGame}
-                    className="inline-flex h-11 min-w-[180px] items-center justify-center rounded-[var(--radius-md)] bg-accent px-6 text-sm font-semibold text-accent-fg transition hover:opacity-90 active:scale-[0.98]"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      startGame();
+                    }}
+                    className="relative z-20 inline-flex h-11 min-w-[180px] items-center justify-center rounded-[var(--radius-md)] bg-accent px-6 text-sm font-semibold text-accent-fg transition hover:opacity-90 active:scale-[0.98]"
                   >
                     Begin Siege
                   </button>
@@ -1152,9 +1163,11 @@ function Overlay({
   return (
     <div
       className={[
-        "absolute inset-0 z-10 flex items-center justify-center",
+        "absolute inset-0 z-20 flex items-center justify-center touch-auto",
         dim ? "bg-bg/70 backdrop-blur-[2px]" : "bg-bg/90 backdrop-blur-sm",
       ].join(" ")}
+      style={{ touchAction: "auto", pointerEvents: "auto" }}
+      onPointerDown={(e) => e.stopPropagation()}
     >
       {children}
     </div>
