@@ -1,4 +1,13 @@
-import type { BuffDef, BuffId, Element, EnemyDef, EnemyKind, TowerDef, WaveDef } from "./types";
+import type {
+  BuffDef,
+  BuffId,
+  Element,
+  EnemyDef,
+  EnemyKind,
+  TowerDef,
+  TowerRole,
+  WaveDef,
+} from "./types";
 
 export const CELL = 40;
 export const COLS = 22;
@@ -14,6 +23,14 @@ export const MAX_TIER = 3;
 /** 10 waves per level × 10 levels. */
 export const WAVES_PER_LEVEL = 10;
 export const TOTAL_LEVELS = 10;
+
+/** 1-based. After wave 4 clears, the road moves; Hex Tide (wave 5) uses the new path. */
+export const MID_SHIFT_WAVE = 5;
+
+export const WATCH_RANGE_MUL = 1.5;
+export const WATCH_FIRE_MUL = 0.55;
+export const MAX_KEEP_FORTIFY = 2;
+export const KEEP_FORTIFY_LIVES = 2;
 
 /** Damage multipliers: tower element → enemy armor. */
 export const MATCHUP: Record<Element, Record<Element, number>> = {
@@ -547,6 +564,29 @@ export function levelClearBonus(level: number): number {
 /** Flat gold when the path moves. Inland towers are not paid extra. */
 export function frontShiftResupply(level: number, _stranded = 0): number {
   return Math.round(45 + level * 16);
+}
+
+export function midShiftResupply(level: number): number {
+  return Math.round(frontShiftResupply(level) * 0.65);
+}
+
+export function wellIncome(tier: number): number {
+  return 10 + Math.max(1, tier) * 8;
+}
+
+export function keepFortifyCost(current: number): number | null {
+  if (current >= MAX_KEEP_FORTIFY) return null;
+  return 80 + current * 70;
+}
+
+export function towerRangeFor(kind: Element, tier: number, role: TowerRole): number {
+  const r = TOWERS[kind].tiers[Math.max(0, tier - 1)]!.range;
+  return role === "watch" ? Math.round(r * WATCH_RANGE_MUL) : r;
+}
+
+export function towerFireRateFor(kind: Element, tier: number, role: TowerRole): number {
+  const f = TOWERS[kind].tiers[Math.max(0, tier - 1)]!.fireRate;
+  return role === "watch" ? f * WATCH_FIRE_MUL : f;
 }
 
 /** Gold returned if this tower is sold at its current tier. */

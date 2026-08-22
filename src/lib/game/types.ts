@@ -109,6 +109,9 @@ export interface Vec2 {
 /** How a tower picks its next target. */
 export type TargetMode = "first" | "strong" | "close" | "last";
 
+/** Combat job. Inland towers convert; they are never sold. */
+export type TowerRole = "battery" | "watch" | "well";
+
 export type GameSpeed = 1 | 2 | 3;
 
 export const TARGET_MODES: TargetMode[] = ["first", "strong", "close", "last"];
@@ -132,6 +135,7 @@ export interface Tower {
   angle: number;
   kills: number;
   targetMode: TargetMode;
+  role: TowerRole;
   /** True if current path is inside this tower's range. */
   covering: boolean;
 }
@@ -243,6 +247,7 @@ export interface Cell {
   buildable: boolean;
   path: boolean;
   occupied: boolean;
+  keep: boolean;
 }
 
 export interface GameSnapshot {
@@ -258,6 +263,8 @@ export interface GameSnapshot {
   waveActive: boolean;
   enemiesRemaining: number;
   selectedTowerId: number | null;
+  selectedKeep: boolean;
+  keepFortify: number;
   placement: PlacementMode;
   score: number;
   message: string | null;

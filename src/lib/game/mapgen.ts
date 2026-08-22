@@ -1,4 +1,4 @@
-import { CELL, COLS, ROWS, cellCenter } from "./config";
+import { CELL, COLS, ROWS, cellCenter, towerRangeFor } from "./config";
 
 /** Mulberry32 seeded PRNG — deterministic per level seed. */
 export function makeRng(seed: number) {
@@ -74,47 +74,51 @@ function edgeCells(edge: Edge, blocked: Set<string>): Array<[number, number]> {
   return out;
 }
 
-function sameCell(a: [number, number], b: [number, number]) {
-  return a[0] === b[0] && a[1] === b[1];
-}
+/** T1 battery bubble used to push a new road off an existing gun line. */
+const T1_BATTERY_RANGE = towerRangeFor("ember", 1, "battery");
+const T1_BATTERY_RANGE2 = T1_BATTERY_RANGE * T1_BATTERY_RANGE;
+/** Per covering tower. Stacks, so a cluster is much more expensive than one gun. */
+const AVOID_CELL_COST = 16;
+const NO_AVOID: Map<string, number> = new Map();
 
-function edgesOf(c: number, r: number): Edge[] {
-  const out: Edge[] = [];
-  if (c === 0) out.push("left");
-  if (c === COLS - 1) out.push("right");
-  if (r === 0) out.push("top");
-  if (r === ROWS - 1) out.push("bottom");
-  return out;
-}
-
-function oppositeEdge(edge: Edge): Edge {
-  if (edge === "left") return "right";
-  if (edge === "right") return "left";
-  if (edge === "top") return "bottom";
-  return "top";
-}
-
-function endsAtKeep(path: Array<[number, number]>, keep: [number, number]) {
-  const last = path[path.length - 1];
-  return !!last && sameCell(last, keep);
-}
-
-/** If the generated road missed the keep, stitch a legal walk onto it. */
-function pinPathToKeep(
-  path: Array<[number, number]>,
-  keep: [number, number],
-  blocked: Set<string>,
-): Array<[number, number]> | null {
-  if (path.length < 2) return null;
-  if (endsAtKeep(path, keep)) return dedupeConsecutive(path);
-  const last = path[path.length - 1]!;
-  const stitch = gridWalk(last, keep, blocked);
-  if (!stitch || stitch.length < 2) return null;
-  return dedupeConsecutive([...path, ...stitch.slice(1)]);
+/**
+ * Extra Dijkstra cost for cells in T1 battery range of avoided towers.
+ * Door + cardinal neighbors stay cheap so the path can always finish.
+ */
+function buildAvoidCost(
+  avoidCells: Array<[number, number]>,
+  door?: [number, number],
+): Map<string, number> {
+  const cost = new Map<string, number>();
+  if (!avoidCells.length) return cost;
+  const exempt = new Set<string>();
+  if (door) {
+    exempt.add(key(door[0], door[1]));
+    for (const [dc, dr] of DIRS) exempt.add(key(door[0] + dc, door[1] + dr));
+  }
+  const span = Math.ceil(T1_BATTERY_RANGE / CELL);
+  for (const [tc, tr] of avoidCells) {
+    const tpos = cellCenter(tc, tr);
+    for (let r = tr - span; r <= tr + span; r++) {
+      for (let c = tc - span; c <= tc + span; c++) {
+        if (!inBounds(c, r)) continue;
+        const k = key(c, r);
+        if (exempt.has(k)) continue;
+        const p = cellCenter(c, r);
+        const dx = tpos.x - p.x;
+        const dy = tpos.y - p.y;
+        if (dx * dx + dy * dy <= T1_BATTERY_RANGE2) {
+          cost.set(k, (cost.get(k) ?? 0) + AVOID_CELL_COST);
+        }
+      }
+    }
+  }
+  return cost;
 }
 
 /**
  * Weighted random-cost pathfind (Dijkstra). Meanders; never enters blocked.
+ * `avoidCost` makes cells in a tower's T1 battery range expensive (door exempt).
  */
 function windyPath(
   start: [number, number],
@@ -122,6 +126,7 @@ function windyPath(
   blocked: Set<string>,
   rng: () => number,
   wind: number,
+  avoidCost: Map<string, number> = NO_AVOID,
 ): Array<[number, number]> | null {
   const sk = key(start[0], start[1]);
   const gk = key(goal[0], goal[1]);
@@ -160,7 +165,7 @@ function windyPath(
       if (!inBounds(nc, nr)) continue;
       const nk = key(nc, nr);
       if (blocked.has(nk)) continue;
-      const nd = cur.d + edgeCost(cur.k, nk);
+      const nd = cur.d + edgeCost(cur.k, nk) + (avoidCost.get(nk) ?? 0);
       if (nd < (dist.get(nk) ?? Infinity)) {
         dist.set(nk, nd);
         parent.set(nk, cur.k);
@@ -200,6 +205,37 @@ function uniqueCount(path: Array<[number, number]>) {
 export const PATH_COVERAGE_MIN = 0.27;
 export const PATH_COVERAGE_MAX = 0.3;
 
+export type KeepFootprint = {
+  origin: [number, number];
+  cells: Array<[number, number]>;
+  door: [number, number];
+};
+
+/** 2×2 keep in a map corner. Door is the inward entrance — the path always ends there. */
+export function keepFootprint(originCol: number, originRow: number): KeepFootprint {
+  const origin: [number, number] = [originCol, originRow];
+  const cells: Array<[number, number]> = [
+    [originCol, originRow],
+    [originCol + 1, originRow],
+    [originCol, originRow + 1],
+    [originCol + 1, originRow + 1],
+  ];
+  const doorCol = originCol === 0 ? originCol + 2 : originCol - 1;
+  const doorRow = originRow === 0 ? originRow + 1 : originRow;
+  return { origin, cells, door: [doorCol, doorRow] };
+}
+
+export function pickKeepOrigin(runSeed: number): [number, number] {
+  const rng = makeRng(runSeed ^ 0x4b454550);
+  const corners: Array<[number, number]> = [
+    [0, 0],
+    [COLS - 2, 0],
+    [0, ROWS - 2],
+    [COLS - 2, ROWS - 2],
+  ];
+  return corners[Math.floor(rng() * corners.length)]!;
+}
+
 function coverageBounds(blocked: Set<string>) {
   const available = Math.max(20, COLS * ROWS - blocked.size);
   const minLen = Math.floor(available * PATH_COVERAGE_MIN);
@@ -209,18 +245,21 @@ function coverageBounds(blocked: Set<string>) {
 
 /**
  * Highly randomized path that never crosses permanent tower cells.
- * Covers at most 30% of available tiles. Spawn (the front) moves each level.
- * Pass `keep` to pin the bastion — the road always ends on that cell.
+ * Covers at most 30% of available tiles. Spawn/base on varying edges.
+ * `avoidCells` (tower tiles) make nearby cells expensive so the road can miss a cluster.
  */
 export function generatePathCells(
   seed: number,
   blockedCells: Array<[number, number]> = [],
-  keep?: [number, number] | null,
+  keep?: KeepFootprint,
+  avoidCells: Array<[number, number]> = [],
 ): Array<[number, number]> {
-  const blocked = new Set(blockedCells.map(([c, r]) => key(c, r)));
-  const keepCell =
-    keep && inBounds(keep[0], keep[1]) && !blocked.has(key(keep[0], keep[1])) ? keep : null;
+  const blocked = new Set(
+    [...blockedCells, ...(keep?.cells ?? [])].map(([c, r]) => key(c, r)),
+  );
   const { minLen, maxLen } = coverageBounds(blocked);
+  const goal = keep?.door;
+  const avoidCost = buildAvoidCost(avoidCells, goal);
 
   let best: Array<[number, number]> | null = null;
   let bestScore = Infinity;
@@ -230,12 +269,12 @@ export function generatePathCells(
     const mid = (minLen + maxLen) / 2;
     // Fewer waypoints to stay near 30% coverage
     const estWp = Math.max(2, Math.min(6, Math.round(mid / 14 + (rng() - 0.5) * 2)));
-    let path = tryOnce(blocked, rng, estWp, minLen, maxLen, keepCell);
-    if (!path) continue;
-    if (keepCell) path = pinPathToKeep(path, keepCell, blocked);
+    const path = tryOnce(blocked, rng, estWp, minLen, maxLen, goal, avoidCost);
     if (!path) continue;
     if (path.some(([c, r]) => blocked.has(key(c, r)))) continue;
-    if (keepCell && !endsAtKeep(path, keepCell)) continue;
+    if (goal && (path[path.length - 1]![0] !== goal[0] || path[path.length - 1]![1] !== goal[1])) {
+      continue;
+    }
 
     const u = uniqueCount(path);
     if (u >= minLen && u <= maxLen) {
@@ -250,12 +289,15 @@ export function generatePathCells(
 
   if (best) {
     const rng = makeRng(seed ^ 0xabcddcba);
-    let adjusted = fitCoverage(best, blocked, rng, minLen, maxLen);
-    if (adjusted && keepCell) adjusted = pinPathToKeep(adjusted, keepCell, blocked);
-    if (adjusted && (!keepCell || endsAtKeep(adjusted, keepCell))) return adjusted;
+    const adjusted = fitCoverage(best, blocked, rng, minLen, maxLen, avoidCost);
+    if (adjusted) {
+      if (!goal || (adjusted[adjusted.length - 1]![0] === goal[0] && adjusted[adjusted.length - 1]![1] === goal[1])) {
+        return adjusted;
+      }
+    }
   }
 
-  return emergencyPath(seed, blocked, minLen, maxLen, keepCell);
+  return emergencyPath(seed, blocked, minLen, maxLen, goal, avoidCost);
 }
 
 function tryOnce(
@@ -264,51 +306,54 @@ function tryOnce(
   targetWp: number,
   minLen: number,
   maxLen: number,
-  keep: [number, number] | null,
+  fixedGoal: [number, number] | undefined,
+  avoidCost: Map<string, number>,
 ): Array<[number, number]> | null {
   const edges: Edge[] = ["left", "right", "top", "bottom"];
   shuffleInPlace(edges, rng);
+  const opposite: Record<Edge, Edge> = {
+    left: "right",
+    right: "left",
+    top: "bottom",
+    bottom: "top",
+  };
 
-  let spawnEdge: Edge;
+  let spawn: [number, number];
   let base: [number, number];
 
-  if (keep) {
-    const keepEdges = edgesOf(keep[0], keep[1]);
-    const spawnEdges = edges.filter((e) => !keepEdges.includes(e));
-    const pool = spawnEdges.length ? spawnEdges : edges;
-    const prefer = keepEdges[0] ? oppositeEdge(keepEdges[0]) : pool[0]!;
-    spawnEdge = rng() < 0.7 && pool.includes(prefer) ? prefer : pool[Math.floor(rng() * pool.length)]!;
-    base = keep;
-  } else {
-    spawnEdge = edges[0]!;
-    const endEdge: Edge =
-      rng() < 0.65
-        ? oppositeEdge(spawnEdge)
-        : edges.filter((e) => e !== spawnEdge)[Math.floor(rng() * 3)]!;
-    const endPool = edgeCells(endEdge, blocked);
-    if (!endPool.length) return null;
-    base = endPool[Math.floor(rng() * endPool.length)]!;
-  }
-
-  const spawnPool = edgeCells(spawnEdge, blocked).filter((c) => !sameCell(c, base));
-  if (!spawnPool.length) return null;
-
-  let spawn = spawnPool[Math.floor(rng() * spawnPool.length)]!;
-  if (!keep) {
-    const endPool = edgeCells(edgesOf(base[0], base[1])[0] ?? spawnEdge, blocked);
-    const pickFrom = endPool.length ? endPool : spawnPool;
-    for (let i = 0; i < 12; i++) {
-      const cand = pickFrom[Math.floor(rng() * pickFrom.length)]!;
-      if (Math.abs(cand[0] - spawn[0]) + Math.abs(cand[1] - spawn[1]) >= 12) {
-        base = cand;
-        break;
-      }
-    }
-  } else {
+  if (fixedGoal) {
+    if (blocked.has(key(fixedGoal[0], fixedGoal[1]))) return null;
+    base = fixedGoal;
+    const spawnEdge = edges[0]!;
+    const spawnPool = edgeCells(spawnEdge, blocked).filter(
+      ([c, r]) => !(c === base[0] && r === base[1]),
+    );
+    if (!spawnPool.length) return null;
+    spawn = spawnPool[Math.floor(rng() * spawnPool.length)]!;
     for (let i = 0; i < 12; i++) {
       const cand = spawnPool[Math.floor(rng() * spawnPool.length)]!;
       if (Math.abs(cand[0] - base[0]) + Math.abs(cand[1] - base[1]) >= 12) {
         spawn = cand;
+        break;
+      }
+    }
+  } else {
+    const spawnEdge = edges[0]!;
+    const endEdge: Edge =
+      rng() < 0.65
+        ? opposite[spawnEdge]
+        : edges.filter((e) => e !== spawnEdge)[Math.floor(rng() * 3)]!;
+
+    const spawnPool = edgeCells(spawnEdge, blocked);
+    const endPool = edgeCells(endEdge, blocked);
+    if (!spawnPool.length || !endPool.length) return null;
+
+    spawn = spawnPool[Math.floor(rng() * spawnPool.length)]!;
+    base = endPool[Math.floor(rng() * endPool.length)]!;
+    for (let i = 0; i < 12; i++) {
+      const cand = endPool[Math.floor(rng() * endPool.length)]!;
+      if (Math.abs(cand[0] - spawn[0]) + Math.abs(cand[1] - spawn[1]) >= 12) {
+        base = cand;
         break;
       }
     }
@@ -369,8 +414,8 @@ function tryOnce(
     segBlock.delete(key(b[0], b[1]));
     for (const bk of blocked) segBlock.add(bk);
 
-    let segment = windyPath(a, b, segBlock, rng, wind);
-    if (!segment) segment = windyPath(a, b, blocked, rng, wind * 0.5);
+    let segment = windyPath(a, b, segBlock, rng, wind, avoidCost);
+    if (!segment) segment = windyPath(a, b, blocked, rng, wind * 0.5, avoidCost);
     if (!segment || segment.length < 2) return null;
 
     for (let j = i === 0 ? 0 : 1; j < segment.length; j++) {
@@ -392,6 +437,7 @@ function fitCoverage(
   rng: () => number,
   minLen: number,
   maxLen: number,
+  avoidCost: Map<string, number> = NO_AVOID,
 ): Array<[number, number]> | null {
   let cur = dedupeConsecutive(path);
   let u = uniqueCount(cur);
@@ -413,8 +459,8 @@ function fitCoverage(
     const idx = 1 + Math.floor(rng() * (cur.length - 2));
     const a = cur[idx]!;
     const b = cur[Math.min(idx + 1, cur.length - 1)]!;
-    const toDetour = windyPath(a, detour, blocked, rng, 1.0);
-    const fromDetour = windyPath(detour, b, blocked, rng, 1.0);
+    const toDetour = windyPath(a, detour, blocked, rng, 1.0, avoidCost);
+    const fromDetour = windyPath(detour, b, blocked, rng, 1.0, avoidCost);
     if (!toDetour || !fromDetour) continue;
     const grown = [
       ...cur.slice(0, idx),
@@ -438,7 +484,7 @@ function fitCoverage(
     );
     const a = cur[i0]!;
     const b = cur[i1]!;
-    const short = windyPath(a, b, blocked, rng, 0.1);
+    const short = windyPath(a, b, blocked, rng, 0.1, avoidCost);
     if (!short || short.length >= i1 - i0) continue;
     cur = dedupeConsecutive([...cur.slice(0, i0), ...short, ...cur.slice(i1 + 1)]);
     u = uniqueCount(cur);
@@ -454,7 +500,7 @@ function fitCoverage(
   }
   if (u > maxLen) {
     // Hard trim: take a shortened route from start to end using low wind
-    const short = windyPath(cur[0]!, cur[cur.length - 1]!, blocked, rng, 0.05);
+    const short = windyPath(cur[0]!, cur[cur.length - 1]!, blocked, rng, 0.05, avoidCost);
     if (short && uniqueCount(short) <= maxLen && uniqueCount(short) >= Math.min(minLen, short.length)) {
       // If still short of min, accept if <= max
       if (uniqueCount(short) <= maxLen) return short;
@@ -468,7 +514,8 @@ function emergencyPath(
   blocked: Set<string>,
   minLen: number,
   maxLen: number,
-  keep: [number, number] | null,
+  goal?: [number, number],
+  avoidCost: Map<string, number> = NO_AVOID,
 ): Array<[number, number]> {
   const rng = makeRng(seed ^ 0xc0ffee);
   const free: Array<[number, number]> = [];
@@ -489,7 +536,10 @@ function emergencyPath(
       : edges[0]!;
   const sp = edgeCells(spawnEdge, blocked).filter((c) => !keep || !sameCell(c, keep));
   const spawn = sp[0] ?? free[0]!;
-  const base = keep ?? (edgeCells(edges[1] === spawnEdge ? edges[2]! : edges[1]!, blocked)[0] ?? free[free.length - 1]!);
+  const base =
+    goal && !blocked.has(key(goal[0], goal[1]))
+      ? goal
+      : (ep[0] ?? free[free.length - 1]!);
 
   const wps = free.filter(
     ([c, r]) =>
@@ -499,27 +549,22 @@ function emergencyPath(
   const nodes: Array<[number, number]> = [spawn, ...wps.slice(0, take), base];
   const full: Array<[number, number]> = [];
   for (let i = 0; i < nodes.length - 1; i++) {
-    const seg = windyPath(nodes[i]!, nodes[i + 1]!, blocked, rng, 0.6);
+    const seg = windyPath(nodes[i]!, nodes[i + 1]!, blocked, rng, 0.6, avoidCost);
     if (!seg) continue;
     for (let j = i === 0 ? 0 : 1; j < seg.length; j++) full.push(seg[j]!);
   }
-  let path = dedupeConsecutive(full);
-  if (keep) {
-    const pinned = pinPathToKeep(path, keep, blocked);
-    if (pinned) path = pinned;
-  }
-  const fitted = fitCoverage(path, blocked, rng, minLen, maxLen);
-  if (fitted && fitted.length >= 2) {
-    if (!keep) return fitted;
-    const pinned = pinPathToKeep(fitted, keep, blocked);
-    if (pinned && endsAtKeep(pinned, keep)) return pinned;
-  }
-  const direct = windyPath(spawn, base, blocked, rng, 0.05);
-  if (direct && direct.length >= 2) {
-    const d = dedupeConsecutive(direct);
-    if (!keep || endsAtKeep(d, keep)) return d;
-  }
-  return gridWalk(spawn, base, blocked) ?? [spawn, base];
+  const endsAtGoal = (p: Array<[number, number]>) =>
+    !goal ||
+    (p.length >= 2 && p[p.length - 1]![0] === goal[0] && p[p.length - 1]![1] === goal[1]);
+
+  const path = dedupeConsecutive(full);
+  const fitted = fitCoverage(path, blocked, rng, minLen, maxLen, avoidCost);
+  if (fitted && fitted.length >= 2 && endsAtGoal(fitted)) return fitted;
+  const direct = windyPath(spawn, base, blocked, rng, 0.05, avoidCost);
+  if (direct && direct.length >= 2 && endsAtGoal(direct)) return dedupeConsecutive(direct);
+  const walk = gridWalk(spawn, base, blocked);
+  if (walk && walk.length >= 2) return walk;
+  return [spawn, base];
 }
 
 /** Guaranteed 4-neighbor walk from spawn to base. Never a 2-point lerp. */

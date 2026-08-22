@@ -8,7 +8,6 @@ import {
   RotateCcw,
   Shield,
   Swords,
-  Trash2,
   ArrowUpCircle,
   Info,
   Volume2,
@@ -30,7 +29,11 @@ import {
   TOTAL_LEVELS,
   TOWERS,
   WAVES_PER_LEVEL,
-  sellRefundFor,
+  keepFortifyCost,
+  wellIncome,
+  MID_SHIFT_WAVE,
+  KEEP_FORTIFY_LIVES,
+  MAX_KEEP_FORTIFY,
   upgradeCost,
 } from "@/lib/game/config";
 import type {
@@ -39,6 +42,7 @@ import type {
   GameSpeed,
   TargetMode,
   TowerKind,
+  TowerRole,
   WavePreview,
 } from "@/lib/game/types";
 import { TARGET_MODE_LABEL } from "@/lib/game/types";
@@ -47,6 +51,18 @@ import { clearSavedRun, loadSavedRun, writeSavedRun } from "@/lib/game/persist";
 
 const TOWER_ORDER: TowerKind[] = ["ember", "frost", "volt", "iron"];
 const SPEED_OPTIONS: GameSpeed[] = [1, 2, 3];
+const ROLE_LABEL: Record<TowerRole, string> = {
+  battery: "Battery",
+  watch: "Watch",
+  well: "Well",
+};
+
+/** X/C cycle: inland battery/well → watch, inland watch → well, covering convert → battery. */
+function convertRoleForKey(t: { role: TowerRole; covering: boolean }): TowerRole {
+  if (!t.covering) return t.role === "watch" ? "well" : "watch";
+  if (t.role === "watch" || t.role === "well") return "battery";
+  return "watch";
+}
 
 function useAudio() {
   const ctxRef = useRef<AudioContext | null>(null);
@@ -332,8 +348,13 @@ export function TowerDefense() {
         engine.upgradeSelected();
         persistNow();
         pushSnap();
-      } else if (e.key === "x" || e.key === "X") {
-        engine.sellSelected();
+      } else if (e.key === "x" || e.key === "X" || e.key === "c" || e.key === "C") {
+        const t = engine.getSelectedTower();
+        if (t) {
+          const role = convertRoleForKey(t);
+          engine.convertSelected(role);
+          if (role === "well") engine.setFpv(false);
+        }
         persistNow();
         pushSnap();
       } else if (e.key === "f" || e.key === "F") {
@@ -353,7 +374,17 @@ export function TowerDefense() {
   const selected = useMemo(() => {
     if (snap.selectedTowerId == null) return null;
     return engine.getSelectedTower();
-  }, [snap.selectedTowerId, engine, snap.gold, snap.wave, snap.score, snap.level, snap.fpv]);
+  }, [
+    snap.selectedTowerId,
+    engine,
+    snap.gold,
+    snap.wave,
+    snap.score,
+    snap.level,
+    snap.fpv,
+    snap.message,
+    snap.selectedKeep,
+  ]);
 
   const startGame = () => {
     audio.unlock();
@@ -436,8 +467,18 @@ export function TowerDefense() {
     pushSnap();
   };
 
-  const sell = () => {
-    if (engine.sellSelected()) audio.beep(220, 0.08);
+  const convert = (role: TowerRole) => {
+    if (engine.convertSelected(role)) {
+      audio.beep(600, 0.08, "square", 0.04);
+      if (role === "well") engine.setFpv(false);
+    } else audio.beep(140, 0.06);
+    persistNow();
+    pushSnap();
+  };
+
+  const fortifyKeep = () => {
+    if (engine.fortifyKeep()) audio.beep(520, 0.08, "square", 0.04);
+    else audio.beep(140, 0.06);
     persistNow();
     pushSnap();
   };
@@ -476,6 +517,7 @@ export function TowerDefense() {
   };
 
   const upCost = selected ? upgradeCost(selected.kind, selected.tier) : null;
+  const fortifyCost = keepFortifyCost(snap.keepFortify);
   const waveDisplay =
     snap.wave >= snap.totalWaves ? snap.totalWaves : snap.wave + 1;
   const gameSpeed: GameSpeed = snap.gameSpeed ?? engine.gameSpeed ?? 1;
@@ -590,7 +632,7 @@ export function TowerDefense() {
             <Overlay>
               <div className="mx-auto max-h-[90dvh] max-w-md overflow-y-auto overflow-x-hidden px-4 py-6 text-center">
                 <img
-                  src="/sprites/base.png"
+                  src="/sprites/keep.png"
                   alt=""
                   width={88}
                   height={88}
@@ -605,9 +647,9 @@ export function TowerDefense() {
                 <p className="mb-6 text-pretty text-sm leading-relaxed text-fg-muted">
                   Survive <strong className="font-medium text-fg">{TOTAL_LEVELS} levels</strong> of{" "}
                   {WAVES_PER_LEVEL} waves each. The{" "}
-                  <strong className="font-medium text-fg">keep stays put</strong>. Each level the siege
-                  front finds a new road. Towers you plant are permanent — even when the path leaves
-                  them inland. Enemies scale hard. Exploit matchups and stack tiers.
+                  <strong className="font-medium text-fg">keep stays in a corner</strong>. Towers stay
+                  forever. After wave 4 the road moves — before Hex Tide (wave {MID_SHIFT_WAVE}).
+                  Exploit matchups and stack tiers.
                 </p>
                 <div className="flex flex-col items-center gap-2">
                   <button
@@ -660,8 +702,8 @@ export function TowerDefense() {
                   ))}
                 </div>
                 <p className="mt-4 text-pretty text-[11px] text-fg-subtle">
-                  Keys: 1–4 build · Space wave · U upgrade · X sell · F speed · T target · V turret cam · Esc
-                  pause
+                  Keys: 1–4 build · Space wave · U upgrade · X/C convert inland · click keep to fortify · F
+                  speed · T target · V turret cam · Esc pause
                 </p>
               </div>
             </Overlay>
@@ -700,7 +742,7 @@ export function TowerDefense() {
             <Overlay>
               <div className="mx-auto max-w-sm px-4 text-center">
                 <h2 className="mb-2 text-2xl font-semibold tracking-tight">
-                  {snap.phase === "won" ? "All Levels Cleared" : "Base Fallen"}
+                  {snap.phase === "won" ? "All Levels Cleared" : "Keep Fallen"}
                 </h2>
                 <p className="mb-1 text-sm text-fg-muted">
                   Score <span className="font-mono text-fg">{snap.score}</span>
@@ -826,7 +868,43 @@ export function TowerDefense() {
             </div>
 
             <div className="rounded-[var(--radius-md)] border border-border bg-bg p-2 sm:p-3">
-              {selected ? (
+              {snap.selectedKeep ? (
+                <>
+                  <div className="mb-1.5 flex items-start justify-between gap-2 sm:mb-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold">The Bastion</p>
+                      <p className="text-xs text-fg-muted">
+                        {snap.lives} lives · Fortify {snap.keepFortify}/{MAX_KEEP_FORTIFY}
+                      </p>
+                    </div>
+                    <img
+                      src="/sprites/keep.png"
+                      alt=""
+                      width={28}
+                      height={28}
+                      className="size-7 shrink-0 object-contain"
+                    />
+                  </div>
+                  <p className="text-[11px] leading-snug text-fg-subtle">
+                    The keep stays. The road moves around it.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={
+                      fortifyCost == null ||
+                      snap.gold < (fortifyCost ?? 0) ||
+                      snap.phase !== "playing"
+                    }
+                    onClick={fortifyKeep}
+                    className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40 sm:mt-2.5"
+                  >
+                    <Shield className="size-3.5" />
+                    {fortifyCost == null
+                      ? "Max fortify"
+                      : `Fortify ${fortifyCost}g · +${KEEP_FORTIFY_LIVES} lives`}
+                  </button>
+                </>
+              ) : selected ? (
                 <>
                   <div className="mb-1.5 flex items-start justify-between gap-2 sm:mb-2">
                     <div className="min-w-0">
@@ -837,8 +915,10 @@ export function TowerDefense() {
                         {TOWERS[selected.kind].name}
                       </p>
                       <p className="text-xs text-fg-muted">
-                        Tier {selected.tier}/{MAX_TIER} · {selected.kills} kills ·{" "}
-                        {TARGET_MODE_LABEL[selectedTargetMode]}
+                        Tier {selected.tier}/{MAX_TIER} · {ROLE_LABEL[selected.role]}
+                        {selected.role !== "well"
+                          ? ` · ${selected.kills} kills · ${TARGET_MODE_LABEL[selectedTargetMode]}`
+                          : ` · ${selected.kills} kills`}
                         {selected.covering === false ? " · off the new path" : ""}
                       </p>
                     </div>
@@ -858,34 +938,75 @@ export function TowerDefense() {
                       {TOWERS[selected.kind].description}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    aria-label={`Cycle targeting mode, currently ${TARGET_MODE_LABEL[selectedTargetMode]}`}
-                    disabled={snap.phase !== "playing" && snap.phase !== "paused"}
-                    onClick={cycleTargetMode}
-                    className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40 sm:mt-2.5"
-                  >
-                    <Crosshair className="size-3.5 text-fg-muted" />
-                    Target: {TARGET_MODE_LABEL[selectedTargetMode]}
-                    <span className="ml-0.5 text-[10px] text-fg-subtle">(T)</span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={snap.fpv}
-                    aria-label={snap.fpv ? "Exit turret cam" : "Turret cam"}
-                    disabled={!selected}
-                    onClick={toggleFpv}
-                    className={[
-                      "mt-1.5 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border text-xs font-medium transition sm:mt-2",
-                      snap.fpv
-                        ? "border-accent bg-accent text-accent-fg"
-                        : "border-border bg-bg-subtle hover:bg-bg-elevated",
-                    ].join(" ")}
-                  >
-                    <Eye className="size-3.5" />
-                    {snap.fpv ? "Exit turret cam" : "Turret cam"}
-                    <span className="ml-0.5 text-[10px] opacity-70">(V)</span>
-                  </button>
+                  {selected.covering === false ? (
+                    <>
+                      <div className="mt-2 flex gap-2 sm:mt-2.5">
+                        <button
+                          type="button"
+                          disabled={selected.role === "watch" || snap.phase !== "playing"}
+                          title="Longer range, slower fire"
+                          onClick={() => convert("watch")}
+                          className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40"
+                        >
+                          Watch
+                        </button>
+                        <button
+                          type="button"
+                          disabled={selected.role === "well" || snap.phase !== "playing"}
+                          title={`No shots — ${wellIncome(selected.tier)}g each wave`}
+                          onClick={() => convert("well")}
+                          className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40"
+                        >
+                          Well
+                        </button>
+                      </div>
+                      <p className="mt-1.5 text-[10px] leading-snug text-fg-subtle">
+                        Watch: longer range, slower fire. Well: no shots,{" "}
+                        {wellIncome(selected.tier)}g each wave.
+                      </p>
+                    </>
+                  ) : selected.role === "watch" || selected.role === "well" ? (
+                    <button
+                      type="button"
+                      disabled={snap.phase !== "playing"}
+                      onClick={() => convert("battery")}
+                      className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40 sm:mt-2.5"
+                    >
+                      Restore battery
+                    </button>
+                  ) : null}
+                  {selected.role !== "well" ? (
+                    <>
+                      <button
+                        type="button"
+                        aria-label={`Cycle targeting mode, currently ${TARGET_MODE_LABEL[selectedTargetMode]}`}
+                        disabled={snap.phase !== "playing" && snap.phase !== "paused"}
+                        onClick={cycleTargetMode}
+                        className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40 sm:mt-2.5"
+                      >
+                        <Crosshair className="size-3.5 text-fg-muted" />
+                        Target: {TARGET_MODE_LABEL[selectedTargetMode]}
+                        <span className="ml-0.5 text-[10px] text-fg-subtle">(T)</span>
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={snap.fpv}
+                        aria-label={snap.fpv ? "Exit turret cam" : "Turret cam"}
+                        disabled={!selected}
+                        onClick={toggleFpv}
+                        className={[
+                          "mt-1.5 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border text-xs font-medium transition sm:mt-2",
+                          snap.fpv
+                            ? "border-accent bg-accent text-accent-fg"
+                            : "border-border bg-bg-subtle hover:bg-bg-elevated",
+                        ].join(" ")}
+                      >
+                        <Eye className="size-3.5" />
+                        {snap.fpv ? "Exit turret cam" : "Turret cam"}
+                        <span className="ml-0.5 text-[10px] opacity-70">(V)</span>
+                      </button>
+                    </>
+                  ) : null}
                   <div className="mt-2 flex gap-2 sm:mt-2.5">
                     <button
                       type="button"
@@ -899,15 +1020,6 @@ export function TowerDefense() {
                     >
                       <ArrowUpCircle className="size-3.5" />
                       {upCost == null ? "Max" : `Up ${upCost}g`}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={snap.phase !== "playing"}
-                      onClick={sell}
-                      className="flex h-10 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border px-3 text-xs font-medium text-fg-muted transition hover:border-danger hover:text-danger disabled:opacity-40"
-                    >
-                      <Trash2 className="size-3.5" />
-                      Sell {sellRefundFor(selected.kind, selected.tier)}g
                     </button>
                   </div>
                 </>
@@ -1206,8 +1318,32 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
             <p className="text-xs leading-relaxed">
               {TOTAL_LEVELS} levels × {WAVES_PER_LEVEL} waves. Clear all waves to unlock the next
               level. Each new level generates a <strong className="text-fg">fresh random path</strong>
-              . <strong className="text-fg">Towers never move</strong> — the path winds around them.
-              Spawn and base can jump edges. Enemies scale hard — Level 10 is brutal.
+              . <strong className="text-fg">Towers never move</strong> — the path winds around them
+              and the keep. Spawn can jump edges; the keep stays in its corner. Enemies scale hard
+              — Level 10 is brutal.
+            </p>
+          </section>
+
+          <section>
+            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+              The front shifts
+            </h4>
+            <p className="text-xs leading-relaxed">
+              Mid-level, after wave 4, the road moves before Hex Tide (wave {MID_SHIFT_WAVE}).
+              Towers stay forever — there is no selling. Convert inland towers to{" "}
+              <strong className="text-fg">Watch</strong> (longer range, slower fire) or{" "}
+              <strong className="text-fg">Well</strong> (gold each wave). When the road comes back,
+              restore a Watch or Well to a battery.
+            </p>
+          </section>
+
+          <section>
+            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+              The Keep
+            </h4>
+            <p className="text-xs leading-relaxed">
+              The Bastion is the corner keep. Click it, then Fortify with gold for extra lives.
+              The keep stays. The road always ends at its door.
             </p>
           </section>
 
@@ -1227,6 +1363,11 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               <li>
                 <strong className="text-fg">V</strong> — enter the selected tower’s turret cam
                 (first-person). Drag to look, Esc or V to exit. Minimap stays in the corner.
+              </li>
+              <li>
+                <strong className="text-fg">X</strong> / <strong className="text-fg">C</strong> —
+                convert the selected inland tower (battery → Watch → Well). Click the keep to
+                select it, then Fortify.
               </li>
               <li>
                 Between waves, a <strong className="text-fg">wave preview</strong> lists enemy
