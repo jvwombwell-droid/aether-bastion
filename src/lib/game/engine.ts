@@ -235,6 +235,11 @@ export class GameEngine {
     this.enemies = [];
   }
 
+  /** Test seam: elemental hit pop. */
+  emitHitFxForTest(element: Element) {
+    this.elementalHit(80, 80, element);
+  }
+
   private loadMapForLevel(
     level: number,
     blocked: Array<[number, number]> = [],
@@ -969,6 +974,7 @@ export class GameEngine {
     const dmg = Math.max(1, Math.round(raw * mul));
     enemy.hp -= dmg;
     enemy.hitFlash = 0.12;
+    enemy.hitFlashColor = TOWERS[element].color;
     const isStrong = mul >= 1.4;
     const isWeak = mul <= 0.65;
     this.floats.push({
@@ -996,9 +1002,6 @@ export class GameEngine {
       enemy.slowTimer = Math.max(enemy.slowTimer, 1.6);
       enemy.slowMul = Math.min(enemy.slowMul, 1 - opts.slow);
     }
-    if (opts?.fromX != null) {
-      this.burst(enemy.x, enemy.y, TOWERS[element].color, 4);
-    }
     if (enemy.hp <= 0) {
       enemy.alive = false;
       this.gold += enemy.reward;
@@ -1014,9 +1017,10 @@ export class GameEngine {
         }
       }
       if (best) best.kills += 1;
-      this.burst(enemy.x, enemy.y, ENEMIES[enemy.kind].color, 14);
+      this.elementalKill(enemy.x, enemy.y, element, !!ENEMIES[enemy.kind].isBoss);
       this.playSfx(ENEMIES[enemy.kind].isBoss ? "bossKill" : "kill");
     } else {
+      if (opts?.fromX != null) this.elementalHit(enemy.x, enemy.y, element);
       this.playSfx(enemy.buffs.some((b) => b.id === "shred") ? "shred" : "hit");
     }
   }
@@ -1134,6 +1138,7 @@ export class GameEngine {
       radius: 4 + tower.tier,
       alive: true,
       color: TOWERS[tower.kind].color,
+      trailT: 0.03,
       applyBuff: tier.applyBuff,
       applyBuffChance: tier.applyBuffChance,
       applyBuffDuration: tier.applyBuffDuration,
@@ -1144,6 +1149,7 @@ export class GameEngine {
       chainBuffChance: tier.chainBuffChance,
       chainBuffDuration: tier.chainBuffDuration,
     });
+    this.muzzleFlash(tower, dx / len, dy / len);
     this.playSfx("fire");
   }
 
@@ -1167,8 +1173,8 @@ export class GameEngine {
         y: oy,
         vx: 0,
         vy: 0,
-        life: 0.28,
-        maxLife: 0.28,
+        life: 0.32,
+        maxLife: 0.32,
         color: p.color,
         size: p.splash,
         kind: "ring",
@@ -1239,8 +1245,121 @@ export class GameEngine {
     }
   }
 
-  private burst(x: number, y: number, color: string, n: number) {
+  private capParticles() {
     if (this.particles.length > 180) this.particles.splice(0, this.particles.length - 140);
+  }
+
+  private fxKind(element: Element): NonNullable<Particle["kind"]> {
+    return element === "frost" ? "shard" : "spark";
+  }
+
+  private emitBurst(
+    x: number,
+    y: number,
+    color: string,
+    n: number,
+    kind: Particle["kind"],
+    size: number,
+    speed: number,
+    life: number,
+  ) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = speed * (0.55 + Math.random() * 0.9);
+      const l = life * (0.75 + Math.random() * 0.5);
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s,
+        life: l,
+        maxLife: l,
+        color,
+        size: size * (0.7 + Math.random() * 0.6),
+        kind,
+      });
+    }
+  }
+
+  private muzzleFlash(tower: Tower, ux: number, uy: number) {
+    this.capParticles();
+    const x = tower.x + ux * 10;
+    const y = tower.y + uy * 10 - 8;
+    const color = TOWERS[tower.kind].color;
+    const kind = this.fxKind(tower.kind);
+    const n = 3 + Math.floor(Math.random() * 3);
+    const iron = tower.kind === "iron";
+    for (let i = 0; i < n; i++) {
+      const life = 0.12 + Math.random() * 0.1;
+      this.particles.push({
+        x: x + (Math.random() - 0.5) * 5,
+        y: y + (Math.random() - 0.5) * 4,
+        vx: ux * 28 + (Math.random() - 0.5) * 46,
+        vy: uy * 28 - 12 + (Math.random() - 0.5) * 36,
+        life,
+        maxLife: life,
+        color,
+        size: iron ? 1.2 + Math.random() * 0.8 : 1.8 + Math.random() * 2,
+        kind,
+      });
+    }
+  }
+
+  private trailCrumb(p: Projectile) {
+    if (this.particles.length >= 180) return;
+    const life = 0.12;
+    this.particles.push({
+      x: p.x + (Math.random() - 0.5) * 2,
+      y: p.y + (Math.random() - 0.5) * 2,
+      vx: -p.vx * 0.12 + (Math.random() - 0.5) * 18,
+      vy: -p.vy * 0.12 + (Math.random() - 0.5) * 18,
+      life,
+      maxLife: life,
+      color: p.color,
+      size: 2.4 + Math.random() * 1.8,
+      kind: this.fxKind(p.element),
+    });
+  }
+
+  private elementalHit(x: number, y: number, element: Element) {
+    this.capParticles();
+    const color = TOWERS[element].color;
+    this.particles.push({
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      life: 0.35,
+      maxLife: 0.35,
+      color,
+      size: 18 + Math.random() * 4,
+      kind: "ring",
+    });
+    this.emitBurst(x, y, color, 5 + Math.floor(Math.random() * 3), this.fxKind(element), 3.2, 70, 0.28);
+  }
+
+  private elementalKill(x: number, y: number, element: Element, isBoss: boolean) {
+    this.capParticles();
+    const color = TOWERS[element].color;
+    this.particles.push({
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      life: isBoss ? 0.5 : 0.42,
+      maxLife: isBoss ? 0.5 : 0.42,
+      color,
+      size: isBoss ? 36 : 26 + Math.random() * 6,
+      kind: "ring",
+    });
+    const shards = isBoss ? 16 : 10 + Math.floor(Math.random() * 5);
+    const sparks = isBoss ? 10 : 6;
+    this.emitBurst(x, y, color, shards, "shard", isBoss ? 5 : 3.8, isBoss ? 110 : 90, 0.4);
+    this.emitBurst(x, y, color, sparks, "spark", isBoss ? 3.2 : 2.6, isBoss ? 80 : 60, 0.3);
+  }
+
+  private burst(x: number, y: number, color: string, n: number) {
+    this.capParticles();
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const s = 40 + Math.random() * 80;
@@ -1291,8 +1410,8 @@ export class GameEngine {
     }
 
     for (const e of this.enemies) {
-      if (!e.alive) continue;
       e.hitFlash = Math.max(0, e.hitFlash - cap);
+      if (!e.alive) continue;
       e.slowTimer = Math.max(0, e.slowTimer - cap);
       if (e.slowTimer <= 0) e.slowMul = 1;
 
@@ -1378,6 +1497,12 @@ export class GameEngine {
       p.y += p.vy * cap;
       if (p.x < -20 || p.y < -20 || p.x > COLS * CELL + 20 || p.y > ROWS * CELL + 20) {
         p.alive = false;
+        continue;
+      }
+      p.trailT -= cap;
+      if (p.trailT <= 0) {
+        p.trailT = 0.03;
+        this.trailCrumb(p);
       }
     }
     this.projectiles = this.projectiles.filter((p) => p.alive);
@@ -2078,8 +2203,18 @@ export class GameEngine {
     if (sprite) {
       const bob = Math.sin(this.animTime * 8 + e.id) * 1.1;
       this.drawContainedSprite(ctx, sprite, 0, -2 + bob, size);
+      if (e.hitFlash > 0) {
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = Math.min(0.5, e.hitFlash * 4);
+        ctx.fillStyle = e.hitFlashColor ?? "#f4f4f5";
+        ctx.beginPath();
+        ctx.ellipse(0, -2, size * 0.3, size * 0.36, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
     } else {
-      ctx.fillStyle = e.hitFlash > 0.05 ? "#f4f4f5" : def.color;
+      ctx.fillStyle = e.hitFlash > 0.05 ? (e.hitFlashColor ?? "#f4f4f5") : def.color;
       ctx.beginPath();
       ctx.arc(0, 0, e.radius, 0, Math.PI * 2);
       ctx.fill();
@@ -2169,37 +2304,89 @@ export class GameEngine {
     ctx.shadowColor = p.color;
     ctx.shadowBlur = 10;
     if (p.element === "ember") {
+      // Orange teardrop — must not read as a gold lightning bolt.
+      ctx.fillStyle = "#e85d4c";
+      ctx.shadowColor = "#e85d4c";
+      ctx.shadowBlur = 12;
       ctx.beginPath();
-      ctx.moveTo(10, 0);
-      ctx.lineTo(-8, 4);
-      ctx.lineTo(-5, 0);
-      ctx.lineTo(-8, -4);
+      ctx.moveTo(18, 0);
+      ctx.lineTo(-12, 7);
+      ctx.lineTo(-6, 0);
+      ctx.lineTo(-12, -7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#7a2418";
+      ctx.beginPath();
+      ctx.moveTo(-2, 0);
+      ctx.lineTo(-12, 4);
+      ctx.lineTo(-8, 0);
+      ctx.lineTo(-12, -4);
       ctx.closePath();
       ctx.fill();
     } else if (p.element === "frost") {
+      ctx.fillStyle = "#5b9fd4";
+      ctx.shadowColor = "#9fd4f0";
+      ctx.shadowBlur = 12;
       ctx.beginPath();
-      ctx.moveTo(9, 0);
-      ctx.lineTo(0, 4);
-      ctx.lineTo(-8, 0);
-      ctx.lineTo(0, -4);
+      ctx.moveTo(16, 0);
+      ctx.lineTo(0, 8);
+      ctx.lineTo(-14, 0);
+      ctx.lineTo(0, -8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#f2f7fc";
+      ctx.beginPath();
+      ctx.moveTo(7, 0);
+      ctx.lineTo(0, 3.5);
+      ctx.lineTo(-5, 0);
+      ctx.lineTo(0, -3.5);
       ctx.closePath();
       ctx.fill();
     } else if (p.element === "volt") {
-      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
       ctx.strokeStyle = p.color;
+      ctx.lineWidth = 7;
+      ctx.globalAlpha = 0.4;
       ctx.beginPath();
-      ctx.moveTo(-10, 0);
-      ctx.lineTo(-4, -4);
-      ctx.lineTo(1, 3);
-      ctx.lineTo(10, 0);
+      ctx.moveTo(-16, 0);
+      ctx.lineTo(-6, -7);
+      ctx.lineTo(2, 6);
+      ctx.lineTo(16, 0);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 3.2;
+      ctx.strokeStyle = "#f5e9a0";
+      ctx.beginPath();
+      ctx.moveTo(-16, 0);
+      ctx.lineTo(-6, -7);
+      ctx.lineTo(2, 6);
+      ctx.lineTo(16, 0);
       ctx.stroke();
     } else {
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "#1c1e22";
+      ctx.lineWidth = 5;
+      ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.arc(0, 0, p.radius + 1, 0, Math.PI * 2);
+      ctx.moveTo(4, 0);
+      ctx.lineTo(-16, 0);
+      ctx.stroke();
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(0, 0, p.radius + 4, 0, Math.PI * 2);
       ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "#eceff4";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
       ctx.fillStyle = "#2a2e34";
       ctx.beginPath();
-      ctx.arc(2, 0, p.radius * 0.45, 0, Math.PI * 2);
+      ctx.arc(3, 0, p.radius * 0.45, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
@@ -2212,7 +2399,7 @@ export class GameEngine {
     ctx.strokeStyle = p.color;
     ctx.fillStyle = p.color;
     if (p.kind === "ring") {
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size * (1.15 - a * 0.4), 0, Math.PI * 2);
       ctx.stroke();
@@ -2410,10 +2597,20 @@ export class GameEngine {
           if (e.hitFlash > 0) ctx.globalAlpha = 0.65 + Math.sin(e.hitFlash * 40) * 0.35;
           if (spr) this.drawContainedSprite(ctx, spr, p.x, p.y - sz * 0.45, sz);
           else {
-            ctx.fillStyle = ENEMIES[e.kind].color;
+            ctx.fillStyle = e.hitFlash > 0 ? (e.hitFlashColor ?? ENEMIES[e.kind].color) : ENEMIES[e.kind].color;
             ctx.beginPath();
             ctx.arc(p.x, p.y - sz * 0.4, sz * 0.28, 0, Math.PI * 2);
             ctx.fill();
+          }
+          if (e.hitFlash > 0 && spr) {
+            ctx.globalCompositeOperation = "lighter";
+            ctx.globalAlpha = Math.min(0.45, e.hitFlash * 3.5);
+            ctx.fillStyle = e.hitFlashColor ?? "#f4f4f5";
+            ctx.beginPath();
+            ctx.ellipse(p.x, p.y - sz * 0.45, sz * 0.26, sz * 0.32, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = "source-over";
+            ctx.globalAlpha = 1;
           }
           const bw = sz * 0.7;
           const pct = Math.max(0, e.hp / e.maxHp);
