@@ -529,12 +529,8 @@ function emergencyPath(
 
   const edges: Edge[] = ["left", "right", "top", "bottom"];
   shuffleInPlace(edges, rng);
-  const keepEdges = keep ? edgesOf(keep[0], keep[1]) : [];
-  const spawnEdge =
-    keep && keepEdges.length
-      ? edges.find((e) => !keepEdges.includes(e)) ?? edges[0]!
-      : edges[0]!;
-  const sp = edgeCells(spawnEdge, blocked).filter((c) => !keep || !sameCell(c, keep));
+  const sp = edgeCells(edges[0]!, blocked);
+  const ep = edgeCells(edges[1] === edges[0] ? edges[2]! : edges[1]!, blocked);
   const spawn = sp[0] ?? free[0]!;
   const base =
     goal && !blocked.has(key(goal[0], goal[1]))
