@@ -2038,13 +2038,37 @@ export class GameEngine {
     ctx.fill();
   }
 
+  /** Visual size only — hitboxes stay on e.radius. */
+  private enemySpriteSize(e: Enemy): number {
+    const def = ENEMIES[e.kind];
+    if (def.isBoss) return 64;
+    if (e.kind === "scout" || e.kind === "runner") return e.radius * 4.0;
+    return e.radius * 3.3;
+  }
+
+  /** Fit sprite in a box without squashing tall or square art. */
+  private drawContainedSprite(
+    ctx: CanvasRenderingContext2D,
+    sprite: HTMLImageElement,
+    x: number,
+    y: number,
+    box: number,
+  ) {
+    const iw = sprite.naturalWidth || box;
+    const ih = sprite.naturalHeight || box;
+    const scale = Math.min(box / iw, box / ih);
+    const w = iw * scale;
+    const h = ih * scale;
+    ctx.drawImage(sprite, Math.round(x - w / 2), Math.round(y - h / 2), w, h);
+  }
+
   private drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy) {
     const def = ENEMIES[e.kind];
     ctx.save();
     ctx.translate(e.x, e.y);
     if (e.hitFlash > 0) ctx.globalAlpha = 0.55 + Math.sin(e.hitFlash * 40) * 0.45;
 
-    const size = def.isBoss ? 46 : e.radius * 2.8;
+    const size = this.enemySpriteSize(e);
     ctx.fillStyle = "rgba(0,0,0,0.32)";
     ctx.beginPath();
     ctx.ellipse(0, size * 0.38, size * 0.28, 4, 0, 0, Math.PI * 2);
@@ -2053,13 +2077,7 @@ export class GameEngine {
     const sprite = enemySprite(e.kind);
     if (sprite) {
       const bob = Math.sin(this.animTime * 8 + e.id) * 1.1;
-      ctx.drawImage(
-        sprite,
-        Math.round(-size / 2),
-        Math.round(-size / 2 - 2 + bob),
-        size,
-        size,
-      );
+      this.drawContainedSprite(ctx, sprite, 0, -2 + bob, size);
     } else {
       ctx.fillStyle = e.hitFlash > 0.05 ? "#f4f4f5" : def.color;
       ctx.beginPath();
@@ -2387,10 +2405,10 @@ export class GameEngine {
         z: p.z,
         draw: () => {
           const spr = enemySprite(e.kind);
-          const sz = Math.max(18, Math.min(110, p.s * (e.kind === "boss" ? 1.35 : 1.05)));
+          const sz = Math.max(18, Math.min(110, p.s * (e.kind === "boss" ? 1.5 : 1.05)));
           ctx.save();
           if (e.hitFlash > 0) ctx.globalAlpha = 0.65 + Math.sin(e.hitFlash * 40) * 0.35;
-          if (spr) ctx.drawImage(spr, p.x - sz / 2, p.y - sz * 0.95, sz, sz);
+          if (spr) this.drawContainedSprite(ctx, spr, p.x, p.y - sz * 0.45, sz);
           else {
             ctx.fillStyle = ENEMIES[e.kind].color;
             ctx.beginPath();

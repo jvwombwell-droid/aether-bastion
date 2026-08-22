@@ -1210,9 +1210,9 @@ function WavePreviewPanel({ preview }: { preview: WavePreview }) {
             <img
               src={`/sprites/${s.kind}.png`}
               alt=""
-              width={18}
-              height={18}
-              className="size-[18px] shrink-0 object-contain"
+              width={24}
+              height={24}
+              className="size-6 shrink-0 object-contain"
             />
             <span className="text-fg">{s.name}</span>
             <span style={{ color: ELEMENT_COLOR[s.armor] }}>{ELEMENT_LABEL[s.armor]}</span>
