@@ -26,4 +26,26 @@ describe("GameEngine persist", () => {
     expect(b.towers[0]?.row).toBe(cell.row);
     expect(b.waveActive).toBe(false);
   });
+
+  it("keeps the bastion put when the front re-routes", () => {
+    const e = new GameEngine();
+    e.reset();
+    const keep = e.pathCells.at(-1);
+    expect(keep).toBeTruthy();
+    const cell = e.cells.flat().find((c) => c.buildable && !c.path && !c.occupied);
+    expect(cell).toBeTruthy();
+    if (!cell || !keep) return;
+    e.setPlacement("ember");
+    expect(e.tryPlace(cell.col, cell.row)).toBe(true);
+
+    e.phase = "levelclear";
+    e.continueAfterLevelClear();
+    expect(e.level).toBe(2);
+    expect(e.pathCells.at(-1)).toEqual(keep);
+    expect(e.towers).toHaveLength(1);
+    expect(e.towers[0]?.col).toBe(cell.col);
+    expect(e.towers[0]?.row).toBe(cell.row);
+    const spawn = e.pathCells[0]!;
+    expect(spawn[0] === keep[0] && spawn[1] === keep[1]).toBe(false);
+  });
 });

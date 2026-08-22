@@ -74,6 +74,45 @@ function edgeCells(edge: Edge, blocked: Set<string>): Array<[number, number]> {
   return out;
 }
 
+function sameCell(a: [number, number], b: [number, number]) {
+  return a[0] === b[0] && a[1] === b[1];
+}
+
+function edgesOf(c: number, r: number): Edge[] {
+  const out: Edge[] = [];
+  if (c === 0) out.push("left");
+  if (c === COLS - 1) out.push("right");
+  if (r === 0) out.push("top");
+  if (r === ROWS - 1) out.push("bottom");
+  return out;
+}
+
+function oppositeEdge(edge: Edge): Edge {
+  if (edge === "left") return "right";
+  if (edge === "right") return "left";
+  if (edge === "top") return "bottom";
+  return "top";
+}
+
+function endsAtKeep(path: Array<[number, number]>, keep: [number, number]) {
+  const last = path[path.length - 1];
+  return !!last && sameCell(last, keep);
+}
+
+/** If the generated road missed the keep, stitch a legal walk onto it. */
+function pinPathToKeep(
+  path: Array<[number, number]>,
+  keep: [number, number],
+  blocked: Set<string>,
+): Array<[number, number]> | null {
+  if (path.length < 2) return null;
+  if (endsAtKeep(path, keep)) return dedupeConsecutive(path);
+  const last = path[path.length - 1]!;
+  const stitch = gridWalk(last, keep, blocked);
+  if (!stitch || stitch.length < 2) return null;
+  return dedupeConsecutive([...path, ...stitch.slice(1)]);
+}
+
 /**
  * Weighted random-cost pathfind (Dijkstra). Meanders; never enters blocked.
  */
@@ -170,13 +209,17 @@ function coverageBounds(blocked: Set<string>) {
 
 /**
  * Highly randomized path that never crosses permanent tower cells.
- * Covers at most 30% of available tiles. Spawn/base on varying edges.
+ * Covers at most 30% of available tiles. Spawn (the front) moves each level.
+ * Pass `keep` to pin the bastion — the road always ends on that cell.
  */
 export function generatePathCells(
   seed: number,
   blockedCells: Array<[number, number]> = [],
+  keep?: [number, number] | null,
 ): Array<[number, number]> {
   const blocked = new Set(blockedCells.map(([c, r]) => key(c, r)));
+  const keepCell =
+    keep && inBounds(keep[0], keep[1]) && !blocked.has(key(keep[0], keep[1])) ? keep : null;
   const { minLen, maxLen } = coverageBounds(blocked);
 
   let best: Array<[number, number]> | null = null;
@@ -187,9 +230,12 @@ export function generatePathCells(
     const mid = (minLen + maxLen) / 2;
     // Fewer waypoints to stay near 30% coverage
     const estWp = Math.max(2, Math.min(6, Math.round(mid / 14 + (rng() - 0.5) * 2)));
-    const path = tryOnce(blocked, rng, estWp, minLen, maxLen);
+    let path = tryOnce(blocked, rng, estWp, minLen, maxLen, keepCell);
+    if (!path) continue;
+    if (keepCell) path = pinPathToKeep(path, keepCell, blocked);
     if (!path) continue;
     if (path.some(([c, r]) => blocked.has(key(c, r)))) continue;
+    if (keepCell && !endsAtKeep(path, keepCell)) continue;
 
     const u = uniqueCount(path);
     if (u >= minLen && u <= maxLen) {
@@ -204,11 +250,12 @@ export function generatePathCells(
 
   if (best) {
     const rng = makeRng(seed ^ 0xabcddcba);
-    const adjusted = fitCoverage(best, blocked, rng, minLen, maxLen);
-    if (adjusted) return adjusted;
+    let adjusted = fitCoverage(best, blocked, rng, minLen, maxLen);
+    if (adjusted && keepCell) adjusted = pinPathToKeep(adjusted, keepCell, blocked);
+    if (adjusted && (!keepCell || endsAtKeep(adjusted, keepCell))) return adjusted;
   }
 
-  return emergencyPath(seed, blocked, minLen, maxLen);
+  return emergencyPath(seed, blocked, minLen, maxLen, keepCell);
 }
 
 function tryOnce(
@@ -217,32 +264,53 @@ function tryOnce(
   targetWp: number,
   minLen: number,
   maxLen: number,
+  keep: [number, number] | null,
 ): Array<[number, number]> | null {
   const edges: Edge[] = ["left", "right", "top", "bottom"];
   shuffleInPlace(edges, rng);
-  const spawnEdge = edges[0]!;
-  const opposite: Record<Edge, Edge> = {
-    left: "right",
-    right: "left",
-    top: "bottom",
-    bottom: "top",
-  };
-  const endEdge: Edge =
-    rng() < 0.65
-      ? opposite[spawnEdge]
-      : edges.filter((e) => e !== spawnEdge)[Math.floor(rng() * 3)]!;
 
-  const spawnPool = edgeCells(spawnEdge, blocked);
-  const endPool = edgeCells(endEdge, blocked);
-  if (!spawnPool.length || !endPool.length) return null;
+  let spawnEdge: Edge;
+  let base: [number, number];
 
-  const spawn = spawnPool[Math.floor(rng() * spawnPool.length)]!;
-  let base = endPool[Math.floor(rng() * endPool.length)]!;
-  for (let i = 0; i < 12; i++) {
-    const cand = endPool[Math.floor(rng() * endPool.length)]!;
-    if (Math.abs(cand[0] - spawn[0]) + Math.abs(cand[1] - spawn[1]) >= 12) {
-      base = cand;
-      break;
+  if (keep) {
+    const keepEdges = edgesOf(keep[0], keep[1]);
+    const spawnEdges = edges.filter((e) => !keepEdges.includes(e));
+    const pool = spawnEdges.length ? spawnEdges : edges;
+    const prefer = keepEdges[0] ? oppositeEdge(keepEdges[0]) : pool[0]!;
+    spawnEdge = rng() < 0.7 && pool.includes(prefer) ? prefer : pool[Math.floor(rng() * pool.length)]!;
+    base = keep;
+  } else {
+    spawnEdge = edges[0]!;
+    const endEdge: Edge =
+      rng() < 0.65
+        ? oppositeEdge(spawnEdge)
+        : edges.filter((e) => e !== spawnEdge)[Math.floor(rng() * 3)]!;
+    const endPool = edgeCells(endEdge, blocked);
+    if (!endPool.length) return null;
+    base = endPool[Math.floor(rng() * endPool.length)]!;
+  }
+
+  const spawnPool = edgeCells(spawnEdge, blocked).filter((c) => !sameCell(c, base));
+  if (!spawnPool.length) return null;
+
+  let spawn = spawnPool[Math.floor(rng() * spawnPool.length)]!;
+  if (!keep) {
+    const endPool = edgeCells(edgesOf(base[0], base[1])[0] ?? spawnEdge, blocked);
+    const pickFrom = endPool.length ? endPool : spawnPool;
+    for (let i = 0; i < 12; i++) {
+      const cand = pickFrom[Math.floor(rng() * pickFrom.length)]!;
+      if (Math.abs(cand[0] - spawn[0]) + Math.abs(cand[1] - spawn[1]) >= 12) {
+        base = cand;
+        break;
+      }
+    }
+  } else {
+    for (let i = 0; i < 12; i++) {
+      const cand = spawnPool[Math.floor(rng() * spawnPool.length)]!;
+      if (Math.abs(cand[0] - base[0]) + Math.abs(cand[1] - base[1]) >= 12) {
+        spawn = cand;
+        break;
+      }
     }
   }
 
@@ -400,6 +468,7 @@ function emergencyPath(
   blocked: Set<string>,
   minLen: number,
   maxLen: number,
+  keep: [number, number] | null,
 ): Array<[number, number]> {
   const rng = makeRng(seed ^ 0xc0ffee);
   const free: Array<[number, number]> = [];
@@ -413,10 +482,14 @@ function emergencyPath(
 
   const edges: Edge[] = ["left", "right", "top", "bottom"];
   shuffleInPlace(edges, rng);
-  const sp = edgeCells(edges[0]!, blocked);
-  const ep = edgeCells(edges[1] === edges[0] ? edges[2]! : edges[1]!, blocked);
+  const keepEdges = keep ? edgesOf(keep[0], keep[1]) : [];
+  const spawnEdge =
+    keep && keepEdges.length
+      ? edges.find((e) => !keepEdges.includes(e)) ?? edges[0]!
+      : edges[0]!;
+  const sp = edgeCells(spawnEdge, blocked).filter((c) => !keep || !sameCell(c, keep));
   const spawn = sp[0] ?? free[0]!;
-  const base = ep[0] ?? free[free.length - 1]!;
+  const base = keep ?? (edgeCells(edges[1] === spawnEdge ? edges[2]! : edges[1]!, blocked)[0] ?? free[free.length - 1]!);
 
   const wps = free.filter(
     ([c, r]) =>
@@ -430,11 +503,22 @@ function emergencyPath(
     if (!seg) continue;
     for (let j = i === 0 ? 0 : 1; j < seg.length; j++) full.push(seg[j]!);
   }
-  const path = dedupeConsecutive(full);
+  let path = dedupeConsecutive(full);
+  if (keep) {
+    const pinned = pinPathToKeep(path, keep, blocked);
+    if (pinned) path = pinned;
+  }
   const fitted = fitCoverage(path, blocked, rng, minLen, maxLen);
-  if (fitted && fitted.length >= 2) return fitted;
+  if (fitted && fitted.length >= 2) {
+    if (!keep) return fitted;
+    const pinned = pinPathToKeep(fitted, keep, blocked);
+    if (pinned && endsAtKeep(pinned, keep)) return pinned;
+  }
   const direct = windyPath(spawn, base, blocked, rng, 0.05);
-  if (direct && direct.length >= 2) return dedupeConsecutive(direct);
+  if (direct && direct.length >= 2) {
+    const d = dedupeConsecutive(direct);
+    if (!keep || endsAtKeep(d, keep)) return d;
+  }
   return gridWalk(spawn, base, blocked) ?? [spawn, base];
 }
 

@@ -15,6 +15,7 @@ import {
   VolumeX,
   Layers,
   Eye,
+  Film,
 } from "lucide-react";
 import { GameEngine } from "@/lib/game/engine";
 import {
@@ -154,6 +155,7 @@ export function TowerDefense() {
   const [showHelp, setShowHelp] = useState(false);
   const [muted, setMuted] = useState(false);
   const [hasSave, setHasSave] = useState(false);
+  const [showTrailer, setShowTrailer] = useState(false);
   const audio = useAudio();
   const audioRef = useRef(audio);
   audioRef.current = audio;
@@ -488,7 +490,7 @@ export function TowerDefense() {
             Aether Bastion
           </h1>
           <p className="hidden text-xs text-fg-muted sm:block">
-            10 levels · wild paths · towers stay forever
+            10 levels · keep holds · the front moves
           </p>
         </div>
 
@@ -602,9 +604,10 @@ export function TowerDefense() {
                 </h2>
                 <p className="mb-6 text-pretty text-sm leading-relaxed text-fg-muted">
                   Survive <strong className="font-medium text-fg">{TOTAL_LEVELS} levels</strong> of{" "}
-                  {WAVES_PER_LEVEL} waves each. Every level spawns a{" "}
-                  <strong className="font-medium text-fg">wild randomized path</strong>. Towers you place are permanent
-                  forever. Enemies scale hard. Exploit matchups and stack tiers.
+                  {WAVES_PER_LEVEL} waves each. The{" "}
+                  <strong className="font-medium text-fg">keep stays put</strong>. Each level the siege
+                  front finds a new road. Towers you plant are permanent — even when the path leaves
+                  them inland. Enemies scale hard. Exploit matchups and stack tiers.
                 </p>
                 <div className="flex flex-col items-center gap-2">
                   <button
@@ -623,6 +626,14 @@ export function TowerDefense() {
                       Continue
                     </button>
                   ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setShowTrailer(true)}
+                    className="inline-flex h-10 min-w-[180px] items-center justify-center gap-2 rounded-[var(--radius-md)] text-sm font-medium text-fg-muted transition hover:text-fg"
+                  >
+                    <Film className="size-4" />
+                    Watch trailer
+                  </button>
                 </div>
                 <div className="mt-6 grid grid-cols-2 gap-2 text-left sm:mt-8 sm:grid-cols-4">
                   {TOWER_ORDER.map((k) => (
@@ -669,10 +680,10 @@ export function TowerDefense() {
                   Score <span className="font-mono text-fg">{snap.score}</span>
                 </p>
                 <p className="mb-6 text-sm text-fg-muted">
-                  The siege front moves. Your towers stay locked — a new path will
-                  wind around them. A gold resupply arrives so you can reinforce
-                  the new line. Inland towers keep firing only if the road comes
-                  back into range.
+                  The keep stays. The front moves. A new road winds toward the same
+                  bastion — towers off the line go inland and only fire if the path
+                  comes back into range. A gold resupply arrives so you can reinforce
+                  the new approach.
                 </p>
                 <button
                   type="button"
@@ -930,6 +941,48 @@ export function TowerDefense() {
           </aside>
         )}
       </div>
+
+      {showTrailer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-3 sm:p-6"
+          role="dialog"
+          aria-label="Aether Bastion trailer"
+          onClick={() => setShowTrailer(false)}
+        >
+          <div
+            className="relative w-full max-w-4xl overflow-hidden rounded-[var(--radius-md)] border border-border bg-black shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <video
+              src="/trailer.mp4"
+              poster="/trailer-poster.jpg"
+              controls
+              autoPlay
+              playsInline
+              className="aspect-video w-full bg-black"
+            />
+            <div className="flex items-center justify-between gap-2 border-t border-border bg-bg-elevated px-3 py-2">
+              <p className="text-xs text-fg-muted">29s · 1080p · ready for X</p>
+              <div className="flex items-center gap-2">
+                <a
+                  href="/trailer.mp4"
+                  download="aether-bastion-trailer.mp4"
+                  className="rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-medium text-fg hover:bg-bg-subtle"
+                >
+                  Download
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowTrailer(false)}
+                  className="rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-bg-subtle hover:text-fg"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

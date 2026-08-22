@@ -126,9 +126,10 @@ export class GameEngine {
   private loadMapForLevel(
     level: number,
     blocked: Array<[number, number]> = [],
+    keep?: [number, number] | null,
   ) {
     const seed = levelMapSeed(level, this.runSeed);
-    this.pathCells = generatePathCells(seed, blocked);
+    this.pathCells = generatePathCells(seed, blocked, keep);
     this.pathPoints = pathCellsToPoints(this.pathCells);
     this.pathLengths = buildPathLengthsFromPoints(this.pathPoints);
     this.pathTotal = this.pathLengths[this.pathLengths.length - 1] ?? 1;
@@ -316,16 +317,17 @@ export class GameEngine {
     return this.gameSpeed;
   }
 
-  /** Advance to next level: path re-rolls around permanent towers; spawn/base may move. */
+  /** Advance to next level: keep stays put, the front re-routes, towers may go inland. */
   private beginNextLevel() {
     const cleared = this.level;
     const bonus = levelClearBonus(cleared);
 
     const blocked: Array<[number, number]> = this.towers.map((t) => [t.col, t.row]);
     this.prevPathPoints = this.pathPoints.slice();
+    const keep = this.pathCells[this.pathCells.length - 1];
 
     this.level += 1;
-    this.loadMapForLevel(this.level, blocked);
+    this.loadMapForLevel(this.level, blocked, keep);
 
     for (const t of this.towers) {
       const cell = this.cells[t.row]![t.col]!;
@@ -358,7 +360,7 @@ export class GameEngine {
     this.fpv = false;
 
     this.setMessage(
-      `The front shifts — ${this.coveringCount} covering · ${stranded} inland · +${bonus + resupply}g`,
+      `Keep holds — front shifts. ${this.coveringCount} covering · ${stranded} inland · +${bonus + resupply}g`,
       6,
     );
     this.playSfx("shift");
@@ -1712,7 +1714,7 @@ export class GameEngine {
     ctx.font = "700 14px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("THE FRONT SHIFTS", mid, 26);
+    ctx.fillText("THE KEEP HOLDS · THE FRONT SHIFTS", mid, 26);
     ctx.font = "500 11px Segoe UI, sans-serif";
     ctx.fillStyle = "#a8a29a";
     ctx.fillText(

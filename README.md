@@ -9,7 +9,7 @@ Elemental tower defense game — hold the path across **10 levels** of **10 wave
 - **Enemy armor + strength/weakness buffs** (Fortify, Haste, Ward, Frail, Exposed, Regen, Shred)
 - **Permanent towers** — once placed, they stay forever; new levels re-route the path around them
 - **The front shifts** — covering vs off-path towers are called out, with a gold resupply
-- **Randomized maps** each level (spawn/base can move edges; path ~30% of free tiles)
+- **Randomized maps** each level (keep stays put; spawn/front can move; path ~30% of free tiles)
 - Escalating difficulty across 10 levels · 1.6× upgrade costs · 70% sell refund
 
 ## Play
