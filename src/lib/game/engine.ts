@@ -212,6 +212,7 @@ export class GameEngine {
   private hoverRow = -1;
   private shake = 0;
   private animTime = 0;
+  private tilePatternCache = new Map<string, CanvasPattern>();
 
   constructor() {
     this.runSeed = (Math.floor(Math.random() * 0xffffffff) || 1) >>> 0;
@@ -1462,9 +1463,9 @@ export class GameEngine {
     ctx.imageSmoothingQuality = "high";
 
     const g = ctx.createLinearGradient(0, 0, 0, viewH);
-    g.addColorStop(0, "#10141a");
-    g.addColorStop(0.55, "#0c1014");
-    g.addColorStop(1, "#0a0c10");
+    g.addColorStop(0, "#1c1816");
+    g.addColorStop(0.5, "#12141a");
+    g.addColorStop(1, "#0c1016");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, viewW, viewH);
 
@@ -1476,6 +1477,8 @@ export class GameEngine {
 
     this.drawMap(ctx);
     this.drawPath(ctx);
+    this.drawDuskWash(ctx);
+    this.drawAetherVein(ctx);
     this.drawEndpointPads(ctx);
 
     if (this.placement && this.hoverCol >= 0) {
@@ -1504,37 +1507,96 @@ export class GameEngine {
     ctx.restore();
   }
 
-  private drawMap(ctx: CanvasRenderingContext2D) {
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        const cell = this.cells[r]![c]!;
-        const x = c * CELL;
-        const y = r * CELL;
-        const h = ((c * 17 + r * 31) >>> 0) % 5;
-        if (cell.path) {
-          ctx.fillStyle = ["#4a3c2a", "#534432", "#463828", "#4e4030", "#3f3426"][h]!;
-        } else if (cell.occupied) {
-          ctx.fillStyle = ["#1a1e24", "#181c22", "#1c2026", "#171b21", "#1b1f25"][h]!;
-        } else {
-          ctx.fillStyle = ["#1c242c", "#1e262e", "#222a32", "#1a222a", "#202830"][h]!;
-        }
-        ctx.fillRect(x, y, CELL, CELL);
-        if (!cell.path) {
-          ctx.strokeStyle = "rgba(8,10,14,0.55)";
-          ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
-          ctx.strokeStyle = "rgba(180,200,220,0.05)";
-          ctx.beginPath();
-          ctx.moveTo(x + 1, y + CELL - 1);
-          ctx.lineTo(x + 1, y + 1);
-          ctx.lineTo(x + CELL - 1, y + 1);
-          ctx.stroke();
-        }
-        if (!cell.path && cell.buildable && !cell.occupied) {
-          ctx.fillStyle = "rgba(120, 170, 150, 0.06)";
-          ctx.fillRect(x + 4, y + 4, CELL - 8, CELL - 8);
+  private ensureTilePattern(
+    ctx: CanvasRenderingContext2D,
+    key: "grass" | "dirt",
+  ): CanvasPattern | null {
+    const cached = this.tilePatternCache.get(key);
+    if (cached) return cached;
+    const img = getSprite(key);
+    if (!img) return null;
+    const pattern = ctx.createPattern(img, "repeat");
+    if (pattern) {
+      // 256px texture at ~2.4 cells so speckle reads at board scale
+      const scale = (CELL * 2.4) / (img.naturalWidth || 256);
+      if (typeof DOMMatrix !== "undefined") {
+        pattern.setTransform(new DOMMatrix([scale, 0, 0, scale, 0, 0]));
+      }
+      this.tilePatternCache.set(key, pattern);
+    }
+    return pattern;
+  }
+
+  /** Fill a rect with a repeating ground sprite, or a dusk color if it is not loaded. */
+  private fillGround(
+    ctx: CanvasRenderingContext2D,
+    key: "grass" | "dirt",
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ) {
+    const pattern = this.ensureTilePattern(ctx, key);
+    if (pattern) {
+      ctx.fillStyle = pattern;
+      ctx.fillRect(x, y, w, h);
+      return;
+    }
+
+    const img = getSprite(key);
+    if (img) {
+      const tw = img.naturalWidth || CELL;
+      const th = img.naturalHeight || CELL;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, w, h);
+      ctx.clip();
+      const x0 = Math.floor(x / tw) * tw;
+      const y0 = Math.floor(y / th) * th;
+      const x1 = x + w;
+      const y1 = y + h;
+      for (let py = y0; py < y1; py += th) {
+        for (let px = x0; px < x1; px += tw) {
+          ctx.drawImage(img, px, py, tw, th);
         }
       }
+      ctx.restore();
+      return;
     }
+
+    if (key === "grass") {
+      const hill = ctx.createLinearGradient(0, 0, 0, ROWS * CELL);
+      hill.addColorStop(0, "#455640");
+      hill.addColorStop(0.5, "#334530");
+      hill.addColorStop(1, "#243226");
+      ctx.fillStyle = hill;
+      ctx.fillRect(x, y, w, h);
+    } else {
+      ctx.fillStyle = "#5a4632";
+      ctx.fillRect(x, y, w, h);
+    }
+  }
+
+  private strokeLane(
+    ctx: CanvasRenderingContext2D,
+    points: Vec2[],
+    color: string,
+    width: number,
+  ) {
+    if (points.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i]!;
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+  }
+
+  private drawMap(ctx: CanvasRenderingContext2D) {
+    this.fillGround(ctx, "grass", 0, 0, COLS * CELL, ROWS * CELL);
   }
 
   private drawPath(ctx: CanvasRenderingContext2D) {
@@ -1543,17 +1605,9 @@ export class GameEngine {
       ctx.save();
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      ctx.globalAlpha = 0.22 * fade;
-      ctx.strokeStyle = "#6a5a48";
-      ctx.lineWidth = CELL * 0.7;
+      ctx.globalAlpha = 0.28 * fade;
       ctx.setLineDash([8, 10]);
-      ctx.beginPath();
-      for (let i = 0; i < this.prevPathPoints.length; i++) {
-        const p = this.prevPathPoints[i]!;
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
-      }
-      ctx.stroke();
+      this.strokeLane(ctx, this.prevPathPoints, "#6a5a48", CELL * 0.7);
       ctx.restore();
     }
 
@@ -1561,66 +1615,108 @@ export class GameEngine {
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    const drawLane = () => {
+    // Rounded dirt road — do not stamp square path cells (that reads as a grid).
+    this.strokeLane(ctx, this.pathPoints, "rgba(48, 34, 22, 0.55)", CELL * 1.02);
+    const dirt = this.ensureTilePattern(ctx, "dirt");
+    if (dirt) {
+      ctx.strokeStyle = dirt;
+      ctx.lineWidth = CELL * 0.86;
       ctx.beginPath();
       for (let i = 0; i < this.pathPoints.length; i++) {
         const p = this.pathPoints[i]!;
         if (i === 0) ctx.moveTo(p.x, p.y);
         else ctx.lineTo(p.x, p.y);
       }
-    };
-    ctx.strokeStyle = "#2a2118";
-    ctx.lineWidth = CELL * 0.72;
-    drawLane();
-    ctx.stroke();
-    ctx.strokeStyle = "#6a5840";
-    ctx.lineWidth = CELL * 0.46;
-    drawLane();
-    ctx.stroke();
-    // Aether vein toward the keep — reads as the lane without highway dashes
-    const pulse = this.frontShift > 0 ? 0.28 + 0.2 * Math.sin(this.animTime * 7) : 0.14;
-    ctx.strokeStyle = `rgba(160, 200, 220, ${pulse})`;
-    ctx.lineWidth = 2.2;
-    drawLane();
-    ctx.stroke();
+      ctx.stroke();
+    } else {
+      this.strokeLane(ctx, this.pathPoints, "#6b5340", CELL * 0.86);
+    }
+    this.strokeLane(ctx, this.pathPoints, "rgba(92, 70, 48, 0.28)", CELL * 0.52);
+    ctx.restore();
+  }
+
+  private drawDuskWash(ctx: CanvasRenderingContext2D) {
+    const w = COLS * CELL;
+    const h = ROWS * CELL;
+
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.globalCompositeOperation = "multiply";
+    const wash = ctx.createLinearGradient(0, 0, 0, h);
+    wash.addColorStop(0, "#f4d4a8");
+    wash.addColorStop(0.4, "#d8c8b4");
+    wash.addColorStop(1, "#8a96a4");
+    ctx.fillStyle = wash;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    const warm = ctx.createLinearGradient(0, 0, 0, h * 0.35);
+    warm.addColorStop(0, "rgba(232, 150, 70, 0.55)");
+    warm.addColorStop(1, "rgba(232, 150, 70, 0)");
+    ctx.fillStyle = warm;
+    ctx.fillRect(0, 0, w, h * 0.35);
+    ctx.restore();
+
+    ctx.save();
+    const vig = ctx.createRadialGradient(
+      w * 0.5,
+      h * 0.42,
+      h * 0.28,
+      w * 0.5,
+      h * 0.5,
+      Math.hypot(w, h) * 0.58,
+    );
+    vig.addColorStop(0, "rgba(0,0,0,0)");
+    vig.addColorStop(0.72, "rgba(10,12,20,0.05)");
+    vig.addColorStop(1, "rgba(8,10,18,0.22)");
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  private drawAetherVein(ctx: CanvasRenderingContext2D) {
+    if (this.pathPoints.length < 2) return;
+    const pulse = this.frontShift > 0 ? 0.16 + 0.1 * Math.sin(this.animTime * 7) : 0.08;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    this.strokeLane(ctx, this.pathPoints, `rgba(150, 196, 210, ${pulse})`, 1.15);
     ctx.restore();
   }
 
   private drawEndpointPads(ctx: CanvasRenderingContext2D) {
-    if (this.pathCells.length === 0) return;
-    const spawnCell = this.pathCells[0]!;
-    const baseCell = this.pathCells[this.pathCells.length - 1]!;
+    if (this.pathPoints.length === 0) return;
+    const spawn = this.pathPoints[0]!;
+    const keep = this.pathPoints[this.pathPoints.length - 1]!;
 
-    for (let i = 0; i < Math.min(4, this.pathCells.length); i++) {
-      const [c, r] = this.pathCells[i]!;
-      const alpha = 0.22 - i * 0.04;
-      ctx.fillStyle = `rgba(196, 92, 92, ${alpha})`;
-      ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
-    }
-
-    for (let i = 0; i < Math.min(4, this.pathCells.length); i++) {
-      const idx = this.pathCells.length - 1 - i;
-      const [c, r] = this.pathCells[idx]!;
-      const alpha = 0.2 - i * 0.035;
-      ctx.fillStyle = `rgba(180, 200, 220, ${alpha})`;
-      ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
-    }
-
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "rgba(196, 92, 92, 0.75)";
-    ctx.strokeRect(
-      spawnCell[0] * CELL + 2,
-      spawnCell[1] * CELL + 2,
-      CELL - 4,
-      CELL - 4,
+    ctx.save();
+    const spawnGlow = ctx.createRadialGradient(
+      spawn.x,
+      spawn.y,
+      2,
+      spawn.x,
+      spawn.y,
+      CELL * 1.35,
     );
-    ctx.strokeStyle = "rgba(200, 210, 225, 0.8)";
-    ctx.strokeRect(
-      baseCell[0] * CELL + 2,
-      baseCell[1] * CELL + 2,
-      CELL - 4,
-      CELL - 4,
-    );
+    spawnGlow.addColorStop(0, "rgba(196, 92, 92, 0.22)");
+    spawnGlow.addColorStop(0.55, "rgba(196, 92, 92, 0.07)");
+    spawnGlow.addColorStop(1, "rgba(196, 92, 92, 0)");
+    ctx.fillStyle = spawnGlow;
+    ctx.beginPath();
+    ctx.arc(spawn.x, spawn.y, CELL * 1.35, 0, Math.PI * 2);
+    ctx.fill();
+
+    const keepGlow = ctx.createRadialGradient(keep.x, keep.y, 2, keep.x, keep.y, CELL * 1.45);
+    keepGlow.addColorStop(0, "rgba(160, 200, 220, 0.2)");
+    keepGlow.addColorStop(0.55, "rgba(160, 200, 220, 0.07)");
+    keepGlow.addColorStop(1, "rgba(160, 200, 220, 0)");
+    ctx.fillStyle = keepGlow;
+    ctx.beginPath();
+    ctx.arc(keep.x, keep.y, CELL * 1.45, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   private drawSpawn(ctx: CanvasRenderingContext2D, pos: Vec2) {
@@ -1788,6 +1884,11 @@ export class GameEngine {
     const def = TOWERS[this.placement];
     const range = def.tiers[0]!.range;
     ctx.save();
+    ctx.fillStyle = ok ? "rgba(236, 224, 196, 0.22)" : "rgba(196, 92, 92, 0.22)";
+    ctx.fillRect(col * CELL + 1, row * CELL + 1, CELL - 2, CELL - 2);
+    ctx.strokeStyle = ok ? "rgba(246, 232, 196, 0.95)" : "rgba(220, 110, 100, 0.95)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(col * CELL + 1, row * CELL + 1, CELL - 2, CELL - 2);
     ctx.globalAlpha = 0.4;
     ctx.strokeStyle = ok ? def.color : "#c45c5c";
     ctx.fillStyle = ok ? def.color + "22" : "#c45c5c22";
