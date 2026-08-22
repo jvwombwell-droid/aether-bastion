@@ -13,6 +13,7 @@ const URLS: Record<string, string> = {
   boss: "/sprites/boss.png",
   spawn: "/sprites/spawn.png",
   base: "/sprites/base.png",
+  keep: "/sprites/keep.png",
 };
 
 const cache = new Map<string, HTMLImageElement>();

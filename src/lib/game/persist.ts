@@ -1,7 +1,7 @@
-import type { GameSpeed, TargetMode, TowerKind } from "./types";
+import type { GameSpeed, TargetMode, TowerKind, TowerRole } from "./types";
 
 export const SAVE_KEY = "aether-bastion-run";
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 export type SavedPhase = "playing" | "paused" | "levelclear";
 
@@ -13,10 +13,11 @@ export interface SavedTower {
   tier: number;
   kills: number;
   targetMode: TargetMode;
+  role: TowerRole;
 }
 
 export interface SavedRun {
-  version: 1;
+  version: 2;
   nextId: number;
   runSeed: number;
   level: number;
@@ -28,10 +29,15 @@ export interface SavedRun {
   gameSpeed: GameSpeed;
   towers: SavedTower[];
   pathCells: Array<[number, number]>;
+  keepCol: number;
+  keepRow: number;
+  midShiftDone: boolean;
+  keepFortify: number;
 }
 
 const TOWER_KINDS: readonly TowerKind[] = ["ember", "frost", "volt", "iron"];
 const TARGET_MODES: readonly TargetMode[] = ["first", "strong", "close", "last"];
+const TOWER_ROLES: readonly TowerRole[] = ["battery", "watch", "well"];
 const PHASES: readonly SavedPhase[] = ["playing", "paused", "levelclear"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -44,6 +50,10 @@ function isTowerKind(value: unknown): value is TowerKind {
 
 function isTargetMode(value: unknown): value is TargetMode {
   return TARGET_MODES.some((mode) => mode === value);
+}
+
+function isTowerRole(value: unknown): value is TowerRole {
+  return TOWER_ROLES.some((role) => role === value);
 }
 
 function isSavedPhase(value: unknown): value is SavedPhase {
@@ -80,7 +90,8 @@ function isSavedTower(value: unknown): value is SavedTower {
     value.tier >= 1 &&
     typeof value.kills === "number" &&
     Number.isFinite(value.kills) &&
-    isTargetMode(value.targetMode)
+    isTargetMode(value.targetMode) &&
+    isTowerRole(value.role)
   );
 }
 
@@ -99,9 +110,13 @@ export function parseSavedRun(data: unknown): SavedRun | null {
   if (!Array.isArray(data.towers) || !data.towers.every(isSavedTower)) return null;
   if (!Array.isArray(data.pathCells) || !data.pathCells.every(isPathCell)) return null;
   if (data.pathCells.length < 2) return null;
+  if (typeof data.keepCol !== "number" || !Number.isFinite(data.keepCol)) return null;
+  if (typeof data.keepRow !== "number" || !Number.isFinite(data.keepRow)) return null;
+  if (typeof data.midShiftDone !== "boolean") return null;
+  if (typeof data.keepFortify !== "number" || !Number.isFinite(data.keepFortify)) return null;
 
   return {
-    version: 1,
+    version: 2,
     nextId: data.nextId,
     runSeed: data.runSeed,
     level: data.level,
@@ -113,6 +128,10 @@ export function parseSavedRun(data: unknown): SavedRun | null {
     gameSpeed: data.gameSpeed,
     towers: data.towers,
     pathCells: data.pathCells,
+    keepCol: data.keepCol,
+    keepRow: data.keepRow,
+    midShiftDone: data.midShiftDone,
+    keepFortify: data.keepFortify,
   };
 }
 

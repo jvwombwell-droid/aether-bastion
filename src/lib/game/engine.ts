@@ -17,15 +17,24 @@ import {
   levelClearBonus,
   levelScale,
   scaleWavesForLevel,
-  sellRefundFor,
   upgradeCost,
   MATCHUP_HINT,
+  MID_SHIFT_WAVE,
+  KEEP_FORTIFY_LIVES,
+  keepFortifyCost,
+  midShiftResupply,
+  towerFireRateFor,
+  towerRangeFor,
+  wellIncome,
 } from "./config";
 import {
   buildPathLengthsFromPoints,
   generatePathCells,
+  keepFootprint,
   levelMapSeed,
   pathCellsToPoints,
+  pickKeepOrigin,
+  type KeepFootprint,
 } from "./mapgen";
 import { damageMultiplier } from "./combat";
 import type { SavedRun, SavedTower } from "./persist";
@@ -45,6 +54,7 @@ import type {
   Projectile,
   TargetMode,
   Tower,
+  TowerRole,
   Vec2,
   WaveDef,
   WavePreview,
@@ -61,6 +71,87 @@ function dist2(ax: number, ay: number, bx: number, by: number) {
   const dx = ax - bx;
   const dy = ay - by;
   return dx * dx + dy * dy;
+}
+
+const FRONT_SHIFT_SEED_ATTEMPTS = 64;
+const FRONT_SHIFT_SEED_STRIDE = 0x9e3779b9;
+
+type ShiftTower = Pick<Tower, "col" | "row" | "x" | "y" | "kind" | "tier" | "role">;
+
+function towerCoversPath(
+  t: Pick<Tower, "x" | "y" | "kind" | "tier" | "role">,
+  pathPoints: Vec2[],
+): boolean {
+  const range = towerRangeFor(t.kind, t.tier, t.role);
+  const r2 = range * range;
+  return pathPoints.some((p) => dist2(t.x, t.y, p.x, p.y) <= r2);
+}
+
+function countPathCoverage(
+  towers: Array<Pick<Tower, "x" | "y" | "kind" | "tier" | "role">>,
+  pathPoints: Vec2[],
+): { covering: number; stranded: number } {
+  let covering = 0;
+  let stranded = 0;
+  for (const t of towers) {
+    if (towerCoversPath(t, pathPoints)) covering += 1;
+    else stranded += 1;
+  }
+  return { covering, stranded };
+}
+
+/** Higher tuple wins. Mixed covering+stranded outranks all-cover, which outranks none-cover. */
+function shiftCoverageScore(
+  covering: number,
+  stranded: number,
+  towerCount: number,
+): [number, number, number] {
+  if (towerCount <= 1) {
+    return [covering >= 1 ? 1 : 0, stranded, covering];
+  }
+  if (stranded >= 1 && covering >= 1) return [2, stranded, covering];
+  if (covering >= 1) return [1, stranded, covering];
+  return [0, stranded, covering];
+}
+
+function scoreBetter(a: [number, number, number], b: [number, number, number]): boolean {
+  if (a[0] !== b[0]) return a[0] > b[0];
+  if (a[1] !== b[1]) return a[1] > b[1];
+  return a[2] > b[2];
+}
+
+/** Pure: generate a candidate path and count covering/stranded without touching the live map. */
+function evaluateShiftSeed(
+  seed: number,
+  blockedTowers: Array<[number, number]>,
+  keep: KeepFootprint,
+  towers: ShiftTower[],
+): { covering: number; stranded: number } {
+  const cells = generatePathCells(seed, blockedTowers, keep, blockedTowers);
+  const points = pathCellsToPoints(cells);
+  return countPathCoverage(towers, points);
+}
+
+/** Pick a path seed that strands someone when possible, without leaving the road uncovered. */
+function pickFrontShiftSeed(seed0: number, keep: KeepFootprint, towers: ShiftTower[]): number {
+  if (towers.length === 0) return seed0;
+  const blocked: Array<[number, number]> = towers.map((t) => [t.col, t.row]);
+  const n = towers.length;
+  let bestSeed = seed0;
+  let bestScore: [number, number, number] | null = null;
+
+  for (let i = 0; i < FRONT_SHIFT_SEED_ATTEMPTS; i++) {
+    const seed = (seed0 + i * FRONT_SHIFT_SEED_STRIDE) >>> 0;
+    const { covering, stranded } = evaluateShiftSeed(seed, blocked, keep, towers);
+    const score = shiftCoverageScore(covering, stranded, n);
+    if (!bestScore || scoreBetter(score, bestScore)) {
+      bestScore = score;
+      bestSeed = seed;
+    }
+    if (n === 1 && covering >= 1) break;
+    if (n >= 2 && covering >= 1 && stranded === n - 1) break;
+  }
+  return bestSeed;
 }
 
 export class GameEngine {
@@ -95,6 +186,10 @@ export class GameEngine {
   fpvLookPitch = 0;
   fpvDragging = false;
   sfx: string[] = [];
+  keepOrigin: [number, number] = [0, 0];
+  midShiftDone = false;
+  keepFortify = 0;
+  selectedKeep = false;
 
   pathCells: Array<[number, number]> = [];
   pathPoints: Vec2[] = [];
@@ -120,15 +215,34 @@ export class GameEngine {
 
   constructor() {
     this.runSeed = (Math.floor(Math.random() * 0xffffffff) || 1) >>> 0;
+    this.keepOrigin = pickKeepOrigin(this.runSeed);
     this.loadMapForLevel(1);
+  }
+
+  keepSpec(): KeepFootprint {
+    return keepFootprint(this.keepOrigin[0], this.keepOrigin[1]);
+  }
+
+  isKeepCell(col: number, row: number): boolean {
+    return this.keepSpec().cells.some(([c, r]) => c === col && r === row);
+  }
+
+  /** Test seam: current wave has no remaining enemies so update() will clear it. */
+  emptyWaveForTest() {
+    this.waveActive = true;
+    this.spawnQueue = [];
+    this.enemies = [];
   }
 
   private loadMapForLevel(
     level: number,
     blocked: Array<[number, number]> = [],
+    seedOverride?: number,
   ) {
-    const seed = levelMapSeed(level, this.runSeed);
-    this.pathCells = generatePathCells(seed, blocked);
+    const keep = this.keepSpec();
+    const seed = seedOverride ?? levelMapSeed(level, this.runSeed);
+    const blockedAll = [...keep.cells, ...blocked];
+    this.pathCells = generatePathCells(seed, blockedAll, keep, blocked);
     this.pathPoints = pathCellsToPoints(this.pathCells);
     this.pathLengths = buildPathLengthsFromPoints(this.pathPoints);
     this.pathTotal = this.pathLengths[this.pathLengths.length - 1] ?? 1;
@@ -136,6 +250,7 @@ export class GameEngine {
     this.buildGrid();
     // Restore permanent tower occupancy after grid rebuild
     for (const [c, r] of blocked) {
+      if (this.isKeepCell(c, r)) continue;
       const cell = this.cells[r]?.[c];
       if (cell) {
         cell.occupied = true;
@@ -147,17 +262,20 @@ export class GameEngine {
 
   private buildGrid() {
     const pathSet = new Set(this.pathCells.map(([c, r]) => `${c},${r}`));
+    const keepSet = new Set(this.keepSpec().cells.map(([c, r]) => `${c},${r}`));
     this.cells = [];
     for (let r = 0; r < ROWS; r++) {
       const row: Cell[] = [];
       for (let c = 0; c < COLS; c++) {
-        const isPath = pathSet.has(`${c},${r}`);
+        const isKeep = keepSet.has(`${c},${r}`);
+        const isPath = pathSet.has(`${c},${r}`) && !isKeep;
         row.push({
           col: c,
           row: r,
           path: isPath,
-          buildable: !isPath,
-          occupied: false,
+          buildable: !isPath && !isKeep,
+          occupied: isKeep,
+          keep: isKeep,
         });
       }
       this.cells.push(row);
@@ -165,8 +283,17 @@ export class GameEngine {
   }
 
   reset() {
+    this.resetWithSeed((Math.floor(Math.random() * 0xffffffff) || 1) >>> 0);
+  }
+
+  /** Test seam: start a run with a fixed map seed. */
+  resetWithSeed(seed: number) {
     nextId = 1;
-    this.runSeed = (Math.floor(Math.random() * 0xffffffff) || 1) >>> 0;
+    this.runSeed = seed >>> 0 || 1;
+    this.keepOrigin = pickKeepOrigin(this.runSeed);
+    this.midShiftDone = false;
+    this.keepFortify = 0;
+    this.selectedKeep = false;
     this.level = 1;
     this.loadMapForLevel(1);
     this.towers = [];
@@ -182,7 +309,7 @@ export class GameEngine {
     this.selectedTowerId = null;
     this.placement = null;
     this.score = 0;
-    this.message = `Level 1 — place a tower beside the road, then start wave 1. Towers stay forever.`;
+    this.message = `Level 1 — the keep holds the corner. Place a tower beside the road, then start wave 1. Towers stay forever.`;
     this.messageTimer = 4;
     this.spawnQueue = [];
     this.waveTime = 0;
@@ -214,9 +341,10 @@ export class GameEngine {
       tier: t.tier,
       kills: t.kills,
       targetMode: t.targetMode,
+      role: t.role,
     }));
     return {
-      version: 1,
+      version: 2,
       nextId,
       runSeed: this.runSeed,
       level: this.level,
@@ -228,6 +356,10 @@ export class GameEngine {
       gameSpeed: this.gameSpeed,
       towers,
       pathCells: this.pathCells.map(([c, r]) => [c, r]),
+      keepCol: this.keepOrigin[0],
+      keepRow: this.keepOrigin[1],
+      midShiftDone: this.midShiftDone,
+      keepFortify: this.keepFortify,
     };
   }
 
@@ -241,13 +373,27 @@ export class GameEngine {
       if (c < 0 || r < 0 || c >= COLS || r >= ROWS) return false;
       if (blocked.has(`${c},${r}`)) return false;
     }
+    const keepCheck = keepFootprint(saved.keepCol, saved.keepRow);
+    const corner =
+      (saved.keepCol === 0 || saved.keepCol === COLS - 2) &&
+      (saved.keepRow === 0 || saved.keepRow === ROWS - 2);
+    if (!corner) return false;
+    const keepKeys = new Set(keepCheck.cells.map(([c, r]) => `${c},${r}`));
+    for (const [c, r] of saved.pathCells) {
+      if (keepKeys.has(`${c},${r}`)) return false;
+    }
     for (const t of saved.towers) {
       if (t.col < 0 || t.row < 0 || t.col >= COLS || t.row >= ROWS) return false;
       if (t.tier < 1 || t.tier > MAX_TIER) return false;
+      if (keepKeys.has(`${t.col},${t.row}`)) return false;
     }
 
     nextId = Math.max(1, Math.floor(saved.nextId));
     this.runSeed = saved.runSeed >>> 0 || 1;
+    this.keepOrigin = [saved.keepCol, saved.keepRow];
+    this.midShiftDone = saved.midShiftDone;
+    this.keepFortify = Math.max(0, Math.floor(saved.keepFortify));
+    this.selectedKeep = false;
     this.level = saved.level;
     this.wave = saved.wave;
     this.phase = saved.phase;
@@ -281,6 +427,7 @@ export class GameEngine {
         angle: 0,
         kills: s.kills,
         targetMode: s.targetMode,
+        role: s.role,
         covering: true,
       });
     }
@@ -316,17 +463,10 @@ export class GameEngine {
     return this.gameSpeed;
   }
 
-  /** Advance to next level: path re-rolls around permanent towers; spawn/base may move. */
-  private beginNextLevel() {
-    const cleared = this.level;
-    const bonus = levelClearBonus(cleared);
-
+  private applyPathAroundTowers(seed: number) {
     const blocked: Array<[number, number]> = this.towers.map((t) => [t.col, t.row]);
     this.prevPathPoints = this.pathPoints.slice();
-
-    this.level += 1;
-    this.loadMapForLevel(this.level, blocked);
-
+    this.loadMapForLevel(this.level, blocked, seed);
     for (const t of this.towers) {
       const cell = this.cells[t.row]![t.col]!;
       cell.occupied = true;
@@ -334,28 +474,57 @@ export class GameEngine {
       cell.path = false;
       t.cooldown = 0.2;
     }
-
     this.refreshTowerCoverage();
-    const stranded = this.strandedCount;
-    const resupply = frontShiftResupply(this.level, stranded);
-    this.gold += bonus + resupply;
-    this.score += 500 + cleared * 200;
-
     this.enemies = [];
     this.projectiles = [];
     this.particles = [];
     this.floats = [];
-    this.wave = 0;
-    this.waveActive = false;
-    this.selectedTowerId = null;
-    this.placement = null;
     this.spawnQueue = [];
     this.waveTime = 0;
-    this.lives = Math.min(START_LIVES, this.lives + 3 + Math.floor(cleared / 2));
+    this.waveActive = false;
+    this.selectedTowerId = null;
+    this.selectedKeep = false;
+    this.placement = null;
+    this.fpv = false;
+    this.frontShift = 4.2;
+  }
+
+  private shiftFrontMidLevel() {
+    const seed0 = (levelMapSeed(this.level, this.runSeed) ^ 0x51e9e55) >>> 0;
+    const seed = pickFrontShiftSeed(seed0, this.keepSpec(), this.towers);
+    this.applyPathAroundTowers(seed);
+    this.midShiftDone = true;
+    const resupply = midShiftResupply(this.level);
+    this.gold += resupply;
+    const nextName = this.levelWaves[this.wave]?.name ?? "the next wave";
+    this.setMessage(
+      `The front shifts — ${nextName} takes the new road. ${this.coveringCount} covering · ${this.strandedCount} inland · +${resupply}g`,
+      6,
+    );
+    this.playSfx("shift");
+  }
+
+  /** Advance to next level: path re-rolls around permanent towers; keep stays. */
+  private beginNextLevel() {
+    const cleared = this.level;
+    const bonus = levelClearBonus(cleared);
+
+    this.level += 1;
+    this.midShiftDone = false;
+    const seed0 = levelMapSeed(this.level, this.runSeed);
+    this.applyPathAroundTowers(pickFrontShiftSeed(seed0, this.keepSpec(), this.towers));
+
+    const stranded = this.strandedCount;
+    const resupply = frontShiftResupply(this.level, stranded);
+    this.gold += bonus + resupply;
+    this.score += 500 + cleared * 200;
+    this.wave = 0;
+    this.lives = Math.min(
+      START_LIVES + this.keepFortify * KEEP_FORTIFY_LIVES,
+      this.lives + 3 + Math.floor(cleared / 2),
+    );
     this.phase = "playing";
     this.levelClearTimer = 0;
-    this.frontShift = 4.2;
-    this.fpv = false;
 
     this.setMessage(
       `The front shifts — ${this.coveringCount} covering · ${stranded} inland · +${bonus + resupply}g`,
@@ -379,9 +548,7 @@ export class GameEngine {
     let covering = 0;
     let stranded = 0;
     for (const t of this.towers) {
-      const range = TOWERS[t.kind].tiers[t.tier - 1]!.range;
-      const r2 = range * range;
-      t.covering = this.pathPoints.some((p) => dist2(t.x, t.y, p.x, p.y) <= r2);
+      t.covering = towerCoversPath(t, this.pathPoints);
       if (t.covering) covering += 1;
       else stranded += 1;
     }
@@ -464,6 +631,8 @@ export class GameEngine {
       enemiesRemaining:
         this.enemies.filter((e) => e.alive).length + this.spawnQueue.length,
       selectedTowerId: this.selectedTowerId,
+      selectedKeep: this.selectedKeep,
+      keepFortify: this.keepFortify,
       placement: this.placement,
       score: this.score,
       message: this.message,
@@ -481,6 +650,7 @@ export class GameEngine {
     if (this.phase !== "playing") return;
     this.placement = kind;
     this.selectedTowerId = null;
+    this.selectedKeep = false;
     if (kind) this.fpv = false;
   }
 
@@ -503,7 +673,7 @@ export class GameEngine {
     if (this.phase !== "playing" || !this.placement) return false;
     if (col < 0 || row < 0 || col >= COLS || row >= ROWS) return false;
     const cell = this.cells[row]![col]!;
-    if (!cell.buildable || cell.occupied || cell.path) {
+    if (!cell.buildable || cell.occupied || cell.path || cell.keep) {
       this.setMessage("Cannot build here.");
       return false;
     }
@@ -527,6 +697,7 @@ export class GameEngine {
       angle: 0,
       kills: 0,
       targetMode: "first",
+      role: "battery",
       covering: true,
     };
     this.towers.push(tower);
@@ -541,12 +712,21 @@ export class GameEngine {
 
   selectAt(col: number, row: number) {
     if (this.phase !== "playing") return;
+    if (this.isKeepCell(col, row)) {
+      this.selectedKeep = true;
+      this.selectedTowerId = null;
+      this.placement = null;
+      this.fpv = false;
+      return;
+    }
     const tower = this.towers.find((t) => t.col === col && t.row === row);
     if (tower) {
       this.selectedTowerId = tower.id;
+      this.selectedKeep = false;
       this.placement = null;
     } else if (!this.placement) {
       this.selectedTowerId = null;
+      this.selectedKeep = false;
       this.fpv = false;
     }
   }
@@ -621,18 +801,46 @@ export class GameEngine {
   }
 
   sellSelected(): boolean {
+    this.setMessage("Towers stay forever. Convert inland ones.");
+    return false;
+  }
+
+  convertSelected(role: TowerRole): boolean {
     const t = this.getSelectedTower();
     if (!t || this.phase !== "playing") return false;
-    const refund = sellRefundFor(t.kind, t.tier);
-    this.gold += refund;
-    const cell = this.cells[t.row]![t.col]!;
-    cell.occupied = false;
-    if (!cell.path) cell.buildable = true;
-    this.towers = this.towers.filter((x) => x.id !== t.id);
-    this.selectedTowerId = null;
-    this.fpv = false;
+    if (t.role === role) return false;
+    if (role === "battery") {
+      if (!t.covering) {
+        this.setMessage("Still inland — restore only when the road returns.");
+        return false;
+      }
+    } else if (t.role === "battery" && t.covering) {
+      this.setMessage("On the road — convert only inland towers.");
+      return false;
+    }
+    t.role = role;
     this.refreshTowerCoverage();
-    this.setMessage(`Sold for ${refund}g`);
+    const label = role === "watch" ? "Watch" : role === "well" ? "Aether Well" : "Battery";
+    this.setMessage(`${TOWERS[t.kind].name} → ${label}`);
+    return true;
+  }
+
+  fortifyKeep(): boolean {
+    if (this.phase !== "playing") return false;
+    const cost = keepFortifyCost(this.keepFortify);
+    if (cost == null) {
+      this.setMessage("Keep is fully fortified.");
+      return false;
+    }
+    if (this.gold < cost) {
+      this.setMessage("Not enough gold.");
+      return false;
+    }
+    this.gold -= cost;
+    this.keepFortify += 1;
+    this.lives += KEEP_FORTIFY_LIVES;
+    this.setMessage(`Keep fortified — +${KEEP_FORTIFY_LIVES} lives`);
+    this.playSfx("place");
     return true;
   }
 
@@ -813,8 +1021,8 @@ export class GameEngine {
   }
 
   private findTarget(tower: Tower): Enemy | null {
-    const def = TOWERS[tower.kind].tiers[tower.tier - 1]!;
-    const range2 = def.range * def.range;
+    const range = towerRangeFor(tower.kind, tower.tier, tower.role);
+    const range2 = range * range;
     const mode = tower.targetMode ?? "first";
     let best: Enemy | null = null;
     let bestProgress = -1;
@@ -1128,7 +1336,7 @@ export class GameEngine {
         if (this.lives <= 0) {
           this.lives = 0;
           this.phase = "lost";
-          this.setMessage(isBoss ? "Boss breached the bastion." : "Base fallen.");
+          this.setMessage(isBoss ? "Boss breached the bastion." : "Keep fallen.");
         } else if (isBoss) {
           this.setMessage(`Boss breach! −${leakCost} lives`);
         }
@@ -1137,13 +1345,13 @@ export class GameEngine {
     this.enemies = this.enemies.filter((e) => e.alive || e.hitFlash > 0);
 
     for (const t of this.towers) {
+      if (t.role === "well") continue;
       t.cooldown -= cap;
       if (t.cooldown > 0) continue;
       const target = this.findTarget(t);
       if (!target) continue;
-      const tier = TOWERS[t.kind].tiers[t.tier - 1]!;
       this.fire(t, target);
-      t.cooldown = 1 / tier.fireRate;
+      t.cooldown = 1 / towerFireRateFor(t.kind, t.tier, t.role);
     }
 
     for (const p of this.projectiles) {
@@ -1195,6 +1403,11 @@ export class GameEngine {
       this.waveActive = false;
       const waveDef = this.levelWaves[this.wave]!;
       this.gold += waveDef.bonusGold;
+      let wellGold = 0;
+      for (const t of this.towers) {
+        if (t.role === "well") wellGold += wellIncome(t.tier);
+      }
+      this.gold += wellGold;
       this.score += 100 + this.wave * 50 + this.level * 30;
       this.wave += 1;
       this.enemies = [];
@@ -1208,8 +1421,11 @@ export class GameEngine {
           this.setMessage(`Level ${this.level} cleared! Read the new front, then continue.`);
           this.playSfx("clear");
         }
+      } else if (!this.midShiftDone && this.wave === MID_SHIFT_WAVE - 1) {
+        this.shiftFrontMidLevel();
       } else {
-        this.setMessage(`Wave clear! +${waveDef.bonusGold}g — prep next.`);
+        const extra = wellGold > 0 ? ` · wells +${wellGold}g` : "";
+        this.setMessage(`Wave clear! +${waveDef.bonusGold}g${extra} — prep next.`);
         this.playSfx("wave");
       }
     }
@@ -1277,7 +1493,10 @@ export class GameEngine {
 
     if (this.pathPoints.length > 0) {
       this.drawSpawn(ctx, this.pathPoints[0]!);
-      this.drawBase(ctx, this.pathPoints[this.pathPoints.length - 1]!);
+      this.drawKeep(ctx);
+      if (this.pathPoints.length > 0) {
+        this.drawKeepDoor(ctx, this.pathPoints[this.pathPoints.length - 1]!);
+      }
     }
 
     if (this.frontShift > 0) this.drawFrontShift(ctx);
@@ -1432,49 +1651,78 @@ export class GameEngine {
     ctx.restore();
   }
 
-  private drawBase(ctx: CanvasRenderingContext2D, pos: Vec2) {
+  private drawKeep(ctx: CanvasRenderingContext2D) {
+    const keep = this.keepSpec();
+    const pos = {
+      x: keep.origin[0] * CELL + CELL,
+      y: keep.origin[1] * CELL + CELL,
+    };
     const pulse = 0.5 + 0.5 * Math.sin(this.animTime * 2.4);
     const danger = this.lives <= 5;
     const accent = danger ? "#c45c5c" : "#c8d0dc";
+    const selected = this.selectedKeep;
 
     ctx.save();
     ctx.translate(pos.x, pos.y);
 
-    const glow = ctx.createRadialGradient(0, 0, 6, 0, 0, 40);
-    glow.addColorStop(0, danger
-      ? `rgba(200, 100, 100, ${0.38 + pulse * 0.15})`
-      : `rgba(160, 200, 220, ${0.32 + pulse * 0.12})`);
+    const glow = ctx.createRadialGradient(0, 0, 8, 0, 0, 58);
+    glow.addColorStop(
+      0,
+      danger
+        ? `rgba(200, 100, 100, ${0.38 + pulse * 0.15})`
+        : `rgba(160, 200, 220, ${0.34 + pulse * 0.14})`,
+    );
     glow.addColorStop(1, "rgba(160, 200, 220, 0)");
     ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(0, 0, 40, 0, Math.PI * 2);
+    ctx.arc(0, 0, 58, 0, Math.PI * 2);
     ctx.fill();
 
-    const keep = getSprite("base");
-    if (keep) {
-      const s = 50;
-      ctx.drawImage(keep, Math.round(-s / 2), Math.round(-s / 2 - 4), s, s);
+    if (selected) {
+      ctx.strokeStyle = "#f4f4f5";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(-CELL, -CELL, CELL * 2, CELL * 2);
+    }
+
+    const spr = getSprite("keep") ?? getSprite("base");
+    if (spr) {
+      const s = 92;
+      ctx.drawImage(spr, Math.round(-s / 2), Math.round(-s / 2 - 10), s, s);
     } else {
       ctx.fillStyle = "#1a1c22";
-      ctx.fillRect(-14, -12, 28, 24);
+      ctx.fillRect(-28, -24, 56, 48);
     }
 
     this.drawLabelPill(
       ctx,
       0,
-      -36,
-      danger ? `BASE  ${this.lives}` : "BASE",
+      -52,
+      danger ? `KEEP  ${this.lives}` : "KEEP",
       accent,
       danger ? "#1a0c0c" : "#0e1014",
     );
     if (!danger) {
-      ctx.fillStyle = "rgba(180, 195, 215, 0.85)";
-      ctx.font = "700 9px Segoe UI, sans-serif";
+      ctx.fillStyle = "rgba(180, 195, 215, 0.9)";
+      ctx.font = "700 10px Segoe UI, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(String(this.lives), 0, 30);
+      ctx.fillText(String(this.lives), 0, 42);
     }
 
+    ctx.restore();
+  }
+
+  private drawKeepDoor(ctx: CanvasRenderingContext2D, pos: Vec2) {
+    ctx.save();
+    ctx.translate(pos.x, pos.y);
+    const pulse = 0.5 + 0.5 * Math.sin(this.animTime * 2.8);
+    const g = ctx.createRadialGradient(0, 0, 2, 0, 0, 16);
+    g.addColorStop(0, `rgba(160, 210, 230, ${0.45 + pulse * 0.2})`);
+    g.addColorStop(1, "rgba(160, 210, 230, 0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, 16, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -1519,7 +1767,8 @@ export class GameEngine {
   }
 
   private drawRange(ctx: CanvasRenderingContext2D, t: Tower) {
-    const range = TOWERS[t.kind].tiers[t.tier - 1]!.range;
+    if (t.role === "well") return;
+    const range = towerRangeFor(t.kind, t.tier, t.role);
     ctx.save();
     ctx.strokeStyle = TOWERS[t.kind].color + "55";
     ctx.fillStyle = TOWERS[t.kind].color + "12";
@@ -1599,7 +1848,19 @@ export class GameEngine {
       ctx.stroke();
     }
 
-    if (!t.covering) {
+    if (t.role === "well") {
+      ctx.fillStyle = "rgba(212,176,80,0.95)";
+      ctx.font = "700 8px Segoe UI, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("WELL", 0, 24);
+    } else if (t.role === "watch") {
+      ctx.fillStyle = "rgba(160,200,220,0.95)";
+      ctx.font = "700 8px Segoe UI, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("WATCH", 0, 24);
+    } else if (!t.covering) {
       ctx.fillStyle = "rgba(212,160,64,0.95)";
       ctx.font = "700 8px Segoe UI, sans-serif";
       ctx.textAlign = "center";
