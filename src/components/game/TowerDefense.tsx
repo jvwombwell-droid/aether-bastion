@@ -687,9 +687,9 @@ export function TowerDefense() {
                         <img
                           src={`/sprites/${k}.png`}
                           alt=""
-                          width={22}
-                          height={22}
-                          className="size-[22px] shrink-0 object-contain"
+                          width={36}
+                          height={36}
+                          className="size-9 shrink-0 object-contain"
                         />
                         <span className="text-xs font-semibold" style={{ color: ELEMENT_COLOR[k] }}>
                           {ELEMENT_LABEL[k]}
@@ -852,9 +852,9 @@ export function TowerDefense() {
                         <img
                           src={`/sprites/${kind}.png`}
                           alt=""
-                          width={20}
-                          height={20}
-                          className="size-5 shrink-0 object-contain"
+                          width={28}
+                          height={28}
+                          className="size-7 shrink-0 object-contain"
                         />
                         <span className="text-xs font-semibold" style={{ color: def.color }}>
                           {def.short}
@@ -1262,9 +1262,9 @@ function WavePreviewPanel({ preview }: { preview: WavePreview }) {
             <img
               src={`/sprites/${s.kind}.png`}
               alt=""
-              width={18}
-              height={18}
-              className="size-[18px] shrink-0 object-contain"
+              width={24}
+              height={24}
+              className="size-6 shrink-0 object-contain"
             />
             <span className="text-fg">{s.name}</span>
             <span style={{ color: ELEMENT_COLOR[s.armor] }}>{ELEMENT_LABEL[s.armor]}</span>

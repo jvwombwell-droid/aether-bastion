@@ -14,20 +14,40 @@ const URLS: Record<string, string> = {
   spawn: "/sprites/spawn.png",
   base: "/sprites/base.png",
   keep: "/sprites/keep.png",
+  grass: "/sprites/grass.png",
+  dirt: "/sprites/dirt.png",
+  well: "/sprites/well.png",
 };
 
 const cache = new Map<string, HTMLImageElement>();
+const retryAt = new Map<string, number>();
+const RETRY_MS = 1500;
+
+function bootImage(url: string): HTMLImageElement {
+  const img = new Image();
+  img.decoding = "async";
+  img.src = url;
+  return img;
+}
 
 function load(key: string): HTMLImageElement | null {
   if (typeof Image === "undefined") return null;
+  const url = URLS[key];
+  if (!url) return null;
   let img = cache.get(key);
   if (!img) {
-    img = new Image();
-    img.decoding = "async";
-    img.src = URLS[key] ?? "";
+    img = bootImage(url);
     cache.set(key, img);
+  } else if (img.complete && img.naturalWidth === 0) {
+    // Grass/dirt may land after first paint; retry a failed fetch.
+    const now = Date.now();
+    if (now - (retryAt.get(key) ?? 0) >= RETRY_MS) {
+      retryAt.set(key, now);
+      img = bootImage(url);
+      cache.set(key, img);
+    }
   }
-  return img.complete && img.naturalWidth > 0 ? img : img;
+  return img;
 }
 
 /** Returns a ready image, or null until loaded. */

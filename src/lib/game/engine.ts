@@ -212,6 +212,7 @@ export class GameEngine {
   private hoverRow = -1;
   private shake = 0;
   private animTime = 0;
+  private tilePatternCache = new Map<string, CanvasPattern>();
 
   constructor() {
     this.runSeed = (Math.floor(Math.random() * 0xffffffff) || 1) >>> 0;
@@ -232,6 +233,11 @@ export class GameEngine {
     this.waveActive = true;
     this.spawnQueue = [];
     this.enemies = [];
+  }
+
+  /** Test seam: elemental hit pop. */
+  emitHitFxForTest(element: Element) {
+    this.elementalHit(80, 80, element);
   }
 
   private loadMapForLevel(
@@ -968,6 +974,7 @@ export class GameEngine {
     const dmg = Math.max(1, Math.round(raw * mul));
     enemy.hp -= dmg;
     enemy.hitFlash = 0.12;
+    enemy.hitFlashColor = TOWERS[element].color;
     const isStrong = mul >= 1.4;
     const isWeak = mul <= 0.65;
     this.floats.push({
@@ -995,9 +1002,6 @@ export class GameEngine {
       enemy.slowTimer = Math.max(enemy.slowTimer, 1.6);
       enemy.slowMul = Math.min(enemy.slowMul, 1 - opts.slow);
     }
-    if (opts?.fromX != null) {
-      this.burst(enemy.x, enemy.y, TOWERS[element].color, 4);
-    }
     if (enemy.hp <= 0) {
       enemy.alive = false;
       this.gold += enemy.reward;
@@ -1013,9 +1017,10 @@ export class GameEngine {
         }
       }
       if (best) best.kills += 1;
-      this.burst(enemy.x, enemy.y, ENEMIES[enemy.kind].color, 14);
+      this.elementalKill(enemy.x, enemy.y, element, !!ENEMIES[enemy.kind].isBoss);
       this.playSfx(ENEMIES[enemy.kind].isBoss ? "bossKill" : "kill");
     } else {
+      if (opts?.fromX != null) this.elementalHit(enemy.x, enemy.y, element);
       this.playSfx(enemy.buffs.some((b) => b.id === "shred") ? "shred" : "hit");
     }
   }
@@ -1133,6 +1138,7 @@ export class GameEngine {
       radius: 4 + tower.tier,
       alive: true,
       color: TOWERS[tower.kind].color,
+      trailT: 0.03,
       applyBuff: tier.applyBuff,
       applyBuffChance: tier.applyBuffChance,
       applyBuffDuration: tier.applyBuffDuration,
@@ -1143,6 +1149,7 @@ export class GameEngine {
       chainBuffChance: tier.chainBuffChance,
       chainBuffDuration: tier.chainBuffDuration,
     });
+    this.muzzleFlash(tower, dx / len, dy / len);
     this.playSfx("fire");
   }
 
@@ -1166,8 +1173,8 @@ export class GameEngine {
         y: oy,
         vx: 0,
         vy: 0,
-        life: 0.28,
-        maxLife: 0.28,
+        life: 0.32,
+        maxLife: 0.32,
         color: p.color,
         size: p.splash,
         kind: "ring",
@@ -1238,8 +1245,121 @@ export class GameEngine {
     }
   }
 
-  private burst(x: number, y: number, color: string, n: number) {
+  private capParticles() {
     if (this.particles.length > 180) this.particles.splice(0, this.particles.length - 140);
+  }
+
+  private fxKind(element: Element): NonNullable<Particle["kind"]> {
+    return element === "frost" ? "shard" : "spark";
+  }
+
+  private emitBurst(
+    x: number,
+    y: number,
+    color: string,
+    n: number,
+    kind: Particle["kind"],
+    size: number,
+    speed: number,
+    life: number,
+  ) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = speed * (0.55 + Math.random() * 0.9);
+      const l = life * (0.75 + Math.random() * 0.5);
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s,
+        life: l,
+        maxLife: l,
+        color,
+        size: size * (0.7 + Math.random() * 0.6),
+        kind,
+      });
+    }
+  }
+
+  private muzzleFlash(tower: Tower, ux: number, uy: number) {
+    this.capParticles();
+    const x = tower.x + ux * 10;
+    const y = tower.y + uy * 10 - 8;
+    const color = TOWERS[tower.kind].color;
+    const kind = this.fxKind(tower.kind);
+    const n = 3 + Math.floor(Math.random() * 3);
+    const iron = tower.kind === "iron";
+    for (let i = 0; i < n; i++) {
+      const life = 0.12 + Math.random() * 0.1;
+      this.particles.push({
+        x: x + (Math.random() - 0.5) * 5,
+        y: y + (Math.random() - 0.5) * 4,
+        vx: ux * 28 + (Math.random() - 0.5) * 46,
+        vy: uy * 28 - 12 + (Math.random() - 0.5) * 36,
+        life,
+        maxLife: life,
+        color,
+        size: iron ? 1.2 + Math.random() * 0.8 : 1.8 + Math.random() * 2,
+        kind,
+      });
+    }
+  }
+
+  private trailCrumb(p: Projectile) {
+    if (this.particles.length >= 180) return;
+    const life = 0.12;
+    this.particles.push({
+      x: p.x + (Math.random() - 0.5) * 2,
+      y: p.y + (Math.random() - 0.5) * 2,
+      vx: -p.vx * 0.12 + (Math.random() - 0.5) * 18,
+      vy: -p.vy * 0.12 + (Math.random() - 0.5) * 18,
+      life,
+      maxLife: life,
+      color: p.color,
+      size: 2.4 + Math.random() * 1.8,
+      kind: this.fxKind(p.element),
+    });
+  }
+
+  private elementalHit(x: number, y: number, element: Element) {
+    this.capParticles();
+    const color = TOWERS[element].color;
+    this.particles.push({
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      life: 0.35,
+      maxLife: 0.35,
+      color,
+      size: 18 + Math.random() * 4,
+      kind: "ring",
+    });
+    this.emitBurst(x, y, color, 5 + Math.floor(Math.random() * 3), this.fxKind(element), 3.2, 70, 0.28);
+  }
+
+  private elementalKill(x: number, y: number, element: Element, isBoss: boolean) {
+    this.capParticles();
+    const color = TOWERS[element].color;
+    this.particles.push({
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      life: isBoss ? 0.5 : 0.42,
+      maxLife: isBoss ? 0.5 : 0.42,
+      color,
+      size: isBoss ? 36 : 26 + Math.random() * 6,
+      kind: "ring",
+    });
+    const shards = isBoss ? 16 : 10 + Math.floor(Math.random() * 5);
+    const sparks = isBoss ? 10 : 6;
+    this.emitBurst(x, y, color, shards, "shard", isBoss ? 5 : 3.8, isBoss ? 110 : 90, 0.4);
+    this.emitBurst(x, y, color, sparks, "spark", isBoss ? 3.2 : 2.6, isBoss ? 80 : 60, 0.3);
+  }
+
+  private burst(x: number, y: number, color: string, n: number) {
+    this.capParticles();
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const s = 40 + Math.random() * 80;
@@ -1290,8 +1410,8 @@ export class GameEngine {
     }
 
     for (const e of this.enemies) {
-      if (!e.alive) continue;
       e.hitFlash = Math.max(0, e.hitFlash - cap);
+      if (!e.alive) continue;
       e.slowTimer = Math.max(0, e.slowTimer - cap);
       if (e.slowTimer <= 0) e.slowMul = 1;
 
@@ -1377,6 +1497,12 @@ export class GameEngine {
       p.y += p.vy * cap;
       if (p.x < -20 || p.y < -20 || p.x > COLS * CELL + 20 || p.y > ROWS * CELL + 20) {
         p.alive = false;
+        continue;
+      }
+      p.trailT -= cap;
+      if (p.trailT <= 0) {
+        p.trailT = 0.03;
+        this.trailCrumb(p);
       }
     }
     this.projectiles = this.projectiles.filter((p) => p.alive);
@@ -1462,9 +1588,9 @@ export class GameEngine {
     ctx.imageSmoothingQuality = "high";
 
     const g = ctx.createLinearGradient(0, 0, 0, viewH);
-    g.addColorStop(0, "#10141a");
-    g.addColorStop(0.55, "#0c1014");
-    g.addColorStop(1, "#0a0c10");
+    g.addColorStop(0, "#1c1816");
+    g.addColorStop(0.5, "#12141a");
+    g.addColorStop(1, "#0c1016");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, viewW, viewH);
 
@@ -1476,6 +1602,8 @@ export class GameEngine {
 
     this.drawMap(ctx);
     this.drawPath(ctx);
+    this.drawDuskWash(ctx);
+    this.drawAetherVein(ctx);
     this.drawEndpointPads(ctx);
 
     if (this.placement && this.hoverCol >= 0) {
@@ -1504,37 +1632,96 @@ export class GameEngine {
     ctx.restore();
   }
 
-  private drawMap(ctx: CanvasRenderingContext2D) {
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        const cell = this.cells[r]![c]!;
-        const x = c * CELL;
-        const y = r * CELL;
-        const h = ((c * 17 + r * 31) >>> 0) % 5;
-        if (cell.path) {
-          ctx.fillStyle = ["#4a3c2a", "#534432", "#463828", "#4e4030", "#3f3426"][h]!;
-        } else if (cell.occupied) {
-          ctx.fillStyle = ["#1a1e24", "#181c22", "#1c2026", "#171b21", "#1b1f25"][h]!;
-        } else {
-          ctx.fillStyle = ["#1c242c", "#1e262e", "#222a32", "#1a222a", "#202830"][h]!;
-        }
-        ctx.fillRect(x, y, CELL, CELL);
-        if (!cell.path) {
-          ctx.strokeStyle = "rgba(8,10,14,0.55)";
-          ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
-          ctx.strokeStyle = "rgba(180,200,220,0.05)";
-          ctx.beginPath();
-          ctx.moveTo(x + 1, y + CELL - 1);
-          ctx.lineTo(x + 1, y + 1);
-          ctx.lineTo(x + CELL - 1, y + 1);
-          ctx.stroke();
-        }
-        if (!cell.path && cell.buildable && !cell.occupied) {
-          ctx.fillStyle = "rgba(120, 170, 150, 0.06)";
-          ctx.fillRect(x + 4, y + 4, CELL - 8, CELL - 8);
+  private ensureTilePattern(
+    ctx: CanvasRenderingContext2D,
+    key: "grass" | "dirt",
+  ): CanvasPattern | null {
+    const cached = this.tilePatternCache.get(key);
+    if (cached) return cached;
+    const img = getSprite(key);
+    if (!img) return null;
+    const pattern = ctx.createPattern(img, "repeat");
+    if (pattern) {
+      // 256px texture at ~2.4 cells so speckle reads at board scale
+      const scale = (CELL * 2.4) / (img.naturalWidth || 256);
+      if (typeof DOMMatrix !== "undefined") {
+        pattern.setTransform(new DOMMatrix([scale, 0, 0, scale, 0, 0]));
+      }
+      this.tilePatternCache.set(key, pattern);
+    }
+    return pattern;
+  }
+
+  /** Fill a rect with a repeating ground sprite, or a dusk color if it is not loaded. */
+  private fillGround(
+    ctx: CanvasRenderingContext2D,
+    key: "grass" | "dirt",
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ) {
+    const pattern = this.ensureTilePattern(ctx, key);
+    if (pattern) {
+      ctx.fillStyle = pattern;
+      ctx.fillRect(x, y, w, h);
+      return;
+    }
+
+    const img = getSprite(key);
+    if (img) {
+      const tw = img.naturalWidth || CELL;
+      const th = img.naturalHeight || CELL;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, w, h);
+      ctx.clip();
+      const x0 = Math.floor(x / tw) * tw;
+      const y0 = Math.floor(y / th) * th;
+      const x1 = x + w;
+      const y1 = y + h;
+      for (let py = y0; py < y1; py += th) {
+        for (let px = x0; px < x1; px += tw) {
+          ctx.drawImage(img, px, py, tw, th);
         }
       }
+      ctx.restore();
+      return;
     }
+
+    if (key === "grass") {
+      const hill = ctx.createLinearGradient(0, 0, 0, ROWS * CELL);
+      hill.addColorStop(0, "#455640");
+      hill.addColorStop(0.5, "#334530");
+      hill.addColorStop(1, "#243226");
+      ctx.fillStyle = hill;
+      ctx.fillRect(x, y, w, h);
+    } else {
+      ctx.fillStyle = "#5a4632";
+      ctx.fillRect(x, y, w, h);
+    }
+  }
+
+  private strokeLane(
+    ctx: CanvasRenderingContext2D,
+    points: Vec2[],
+    color: string,
+    width: number,
+  ) {
+    if (points.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i]!;
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+  }
+
+  private drawMap(ctx: CanvasRenderingContext2D) {
+    this.fillGround(ctx, "grass", 0, 0, COLS * CELL, ROWS * CELL);
   }
 
   private drawPath(ctx: CanvasRenderingContext2D) {
@@ -1543,17 +1730,9 @@ export class GameEngine {
       ctx.save();
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      ctx.globalAlpha = 0.22 * fade;
-      ctx.strokeStyle = "#6a5a48";
-      ctx.lineWidth = CELL * 0.7;
+      ctx.globalAlpha = 0.28 * fade;
       ctx.setLineDash([8, 10]);
-      ctx.beginPath();
-      for (let i = 0; i < this.prevPathPoints.length; i++) {
-        const p = this.prevPathPoints[i]!;
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
-      }
-      ctx.stroke();
+      this.strokeLane(ctx, this.prevPathPoints, "#6a5a48", CELL * 0.7);
       ctx.restore();
     }
 
@@ -1561,66 +1740,108 @@ export class GameEngine {
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    const drawLane = () => {
+    // Rounded dirt road — do not stamp square path cells (that reads as a grid).
+    this.strokeLane(ctx, this.pathPoints, "rgba(48, 34, 22, 0.55)", CELL * 1.02);
+    const dirt = this.ensureTilePattern(ctx, "dirt");
+    if (dirt) {
+      ctx.strokeStyle = dirt;
+      ctx.lineWidth = CELL * 0.86;
       ctx.beginPath();
       for (let i = 0; i < this.pathPoints.length; i++) {
         const p = this.pathPoints[i]!;
         if (i === 0) ctx.moveTo(p.x, p.y);
         else ctx.lineTo(p.x, p.y);
       }
-    };
-    ctx.strokeStyle = "#2a2118";
-    ctx.lineWidth = CELL * 0.72;
-    drawLane();
-    ctx.stroke();
-    ctx.strokeStyle = "#6a5840";
-    ctx.lineWidth = CELL * 0.46;
-    drawLane();
-    ctx.stroke();
-    // Aether vein toward the keep — reads as the lane without highway dashes
-    const pulse = this.frontShift > 0 ? 0.28 + 0.2 * Math.sin(this.animTime * 7) : 0.14;
-    ctx.strokeStyle = `rgba(160, 200, 220, ${pulse})`;
-    ctx.lineWidth = 2.2;
-    drawLane();
-    ctx.stroke();
+      ctx.stroke();
+    } else {
+      this.strokeLane(ctx, this.pathPoints, "#6b5340", CELL * 0.86);
+    }
+    this.strokeLane(ctx, this.pathPoints, "rgba(92, 70, 48, 0.28)", CELL * 0.52);
+    ctx.restore();
+  }
+
+  private drawDuskWash(ctx: CanvasRenderingContext2D) {
+    const w = COLS * CELL;
+    const h = ROWS * CELL;
+
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.globalCompositeOperation = "multiply";
+    const wash = ctx.createLinearGradient(0, 0, 0, h);
+    wash.addColorStop(0, "#f4d4a8");
+    wash.addColorStop(0.4, "#d8c8b4");
+    wash.addColorStop(1, "#8a96a4");
+    ctx.fillStyle = wash;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    const warm = ctx.createLinearGradient(0, 0, 0, h * 0.35);
+    warm.addColorStop(0, "rgba(232, 150, 70, 0.55)");
+    warm.addColorStop(1, "rgba(232, 150, 70, 0)");
+    ctx.fillStyle = warm;
+    ctx.fillRect(0, 0, w, h * 0.35);
+    ctx.restore();
+
+    ctx.save();
+    const vig = ctx.createRadialGradient(
+      w * 0.5,
+      h * 0.42,
+      h * 0.28,
+      w * 0.5,
+      h * 0.5,
+      Math.hypot(w, h) * 0.58,
+    );
+    vig.addColorStop(0, "rgba(0,0,0,0)");
+    vig.addColorStop(0.72, "rgba(10,12,20,0.05)");
+    vig.addColorStop(1, "rgba(8,10,18,0.22)");
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  private drawAetherVein(ctx: CanvasRenderingContext2D) {
+    if (this.pathPoints.length < 2) return;
+    const pulse = this.frontShift > 0 ? 0.16 + 0.1 * Math.sin(this.animTime * 7) : 0.08;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    this.strokeLane(ctx, this.pathPoints, `rgba(150, 196, 210, ${pulse})`, 1.15);
     ctx.restore();
   }
 
   private drawEndpointPads(ctx: CanvasRenderingContext2D) {
-    if (this.pathCells.length === 0) return;
-    const spawnCell = this.pathCells[0]!;
-    const baseCell = this.pathCells[this.pathCells.length - 1]!;
+    if (this.pathPoints.length === 0) return;
+    const spawn = this.pathPoints[0]!;
+    const keep = this.pathPoints[this.pathPoints.length - 1]!;
 
-    for (let i = 0; i < Math.min(4, this.pathCells.length); i++) {
-      const [c, r] = this.pathCells[i]!;
-      const alpha = 0.22 - i * 0.04;
-      ctx.fillStyle = `rgba(196, 92, 92, ${alpha})`;
-      ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
-    }
-
-    for (let i = 0; i < Math.min(4, this.pathCells.length); i++) {
-      const idx = this.pathCells.length - 1 - i;
-      const [c, r] = this.pathCells[idx]!;
-      const alpha = 0.2 - i * 0.035;
-      ctx.fillStyle = `rgba(180, 200, 220, ${alpha})`;
-      ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
-    }
-
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "rgba(196, 92, 92, 0.75)";
-    ctx.strokeRect(
-      spawnCell[0] * CELL + 2,
-      spawnCell[1] * CELL + 2,
-      CELL - 4,
-      CELL - 4,
+    ctx.save();
+    const spawnGlow = ctx.createRadialGradient(
+      spawn.x,
+      spawn.y,
+      2,
+      spawn.x,
+      spawn.y,
+      CELL * 1.35,
     );
-    ctx.strokeStyle = "rgba(200, 210, 225, 0.8)";
-    ctx.strokeRect(
-      baseCell[0] * CELL + 2,
-      baseCell[1] * CELL + 2,
-      CELL - 4,
-      CELL - 4,
-    );
+    spawnGlow.addColorStop(0, "rgba(196, 92, 92, 0.22)");
+    spawnGlow.addColorStop(0.55, "rgba(196, 92, 92, 0.07)");
+    spawnGlow.addColorStop(1, "rgba(196, 92, 92, 0)");
+    ctx.fillStyle = spawnGlow;
+    ctx.beginPath();
+    ctx.arc(spawn.x, spawn.y, CELL * 1.35, 0, Math.PI * 2);
+    ctx.fill();
+
+    const keepGlow = ctx.createRadialGradient(keep.x, keep.y, 2, keep.x, keep.y, CELL * 1.45);
+    keepGlow.addColorStop(0, "rgba(160, 200, 220, 0.2)");
+    keepGlow.addColorStop(0.55, "rgba(160, 200, 220, 0.07)");
+    keepGlow.addColorStop(1, "rgba(160, 200, 220, 0)");
+    ctx.fillStyle = keepGlow;
+    ctx.beginPath();
+    ctx.arc(keep.x, keep.y, CELL * 1.45, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   private drawSpawn(ctx: CanvasRenderingContext2D, pos: Vec2) {
@@ -1788,6 +2009,11 @@ export class GameEngine {
     const def = TOWERS[this.placement];
     const range = def.tiers[0]!.range;
     ctx.save();
+    ctx.fillStyle = ok ? "rgba(236, 224, 196, 0.22)" : "rgba(196, 92, 92, 0.22)";
+    ctx.fillRect(col * CELL + 1, row * CELL + 1, CELL - 2, CELL - 2);
+    ctx.strokeStyle = ok ? "rgba(246, 232, 196, 0.95)" : "rgba(220, 110, 100, 0.95)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(col * CELL + 1, row * CELL + 1, CELL - 2, CELL - 2);
     ctx.globalAlpha = 0.4;
     ctx.strokeStyle = ok ? def.color : "#c45c5c";
     ctx.fillStyle = ok ? def.color + "22" : "#c45c5c22";
@@ -1829,15 +2055,22 @@ export class GameEngine {
       ctx.stroke();
     }
 
+    if (t.role === "watch") this.drawWatchGlow(ctx);
+
     const sprite = towerSprite(t.kind);
-    if (sprite) {
-      const s = 38 + t.tier * 2;
-      ctx.drawImage(sprite, Math.round(-s / 2), Math.round(-s / 2 - 4), s, s);
+    if (t.role === "well") {
+      this.drawWellTower(ctx, t);
     } else {
-      ctx.fillStyle = def.color;
-      ctx.beginPath();
-      ctx.arc(0, 0, 10, 0, Math.PI * 2);
-      ctx.fill();
+      if (sprite) {
+        const s = 38 + t.tier * 2;
+        ctx.drawImage(sprite, Math.round(-s / 2), Math.round(-s / 2 - 4), s, s);
+      } else {
+        ctx.fillStyle = def.color;
+        ctx.beginPath();
+        ctx.arc(0, 0, 10, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (t.role === "watch") this.drawWatchLantern(ctx);
     }
 
     if (selected) {
@@ -1880,13 +2113,87 @@ export class GameEngine {
     ctx.restore();
   }
 
+  /** Cool watch-light, not Ember orange. */
+  private drawWatchGlow(ctx: CanvasRenderingContext2D) {
+    const pulse = 0.5 + 0.5 * Math.sin(this.animTime * 2.6);
+    const glow = ctx.createRadialGradient(0, -12, 2, 0, -10, 28);
+    glow.addColorStop(0, `rgba(220, 230, 255, ${0.4 + pulse * 0.14})`);
+    glow.addColorStop(0.45, `rgba(160, 190, 220, ${0.16 + pulse * 0.08})`);
+    glow.addColorStop(1, "rgba(160, 190, 220, 0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.ellipse(0, -12, 14, 22, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** Small lantern on the crown — not a 22px lamp-post sticker. */
+  private drawWatchLantern(ctx: CanvasRenderingContext2D) {
+    ctx.fillStyle = "rgba(236, 232, 210, 0.95)";
+    ctx.beginPath();
+    ctx.moveTo(0, -22);
+    ctx.lineTo(5, -16);
+    ctx.lineTo(0, -11);
+    ctx.lineTo(-5, -16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "rgba(180, 210, 240, 0.9)";
+    ctx.beginPath();
+    ctx.arc(0, -16, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** Well replaces the gun. */
+  private drawWellTower(ctx: CanvasRenderingContext2D, t: Tower) {
+    const overlay = getSprite("well");
+    if (overlay) {
+      const s = 36 + t.tier * 2;
+      ctx.drawImage(overlay, Math.round(-s / 2), Math.round(-s / 2 + 1), s, s);
+      return;
+    }
+    ctx.fillStyle = "#6e685c";
+    ctx.beginPath();
+    ctx.ellipse(0, 3, 15, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#9a9384";
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    ctx.fillStyle = "#0d0b12";
+    ctx.beginPath();
+    ctx.ellipse(0, 3, 9.5, 6.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** Visual size only — hitboxes stay on e.radius. */
+  private enemySpriteSize(e: Enemy): number {
+    const def = ENEMIES[e.kind];
+    if (def.isBoss) return 64;
+    if (e.kind === "scout" || e.kind === "runner") return e.radius * 4.0;
+    return e.radius * 3.3;
+  }
+
+  /** Fit sprite in a box without squashing tall or square art. */
+  private drawContainedSprite(
+    ctx: CanvasRenderingContext2D,
+    sprite: HTMLImageElement,
+    x: number,
+    y: number,
+    box: number,
+  ) {
+    const iw = sprite.naturalWidth || box;
+    const ih = sprite.naturalHeight || box;
+    const scale = Math.min(box / iw, box / ih);
+    const w = iw * scale;
+    const h = ih * scale;
+    ctx.drawImage(sprite, Math.round(x - w / 2), Math.round(y - h / 2), w, h);
+  }
+
   private drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy) {
     const def = ENEMIES[e.kind];
     ctx.save();
     ctx.translate(e.x, e.y);
     if (e.hitFlash > 0) ctx.globalAlpha = 0.55 + Math.sin(e.hitFlash * 40) * 0.45;
 
-    const size = def.isBoss ? 46 : e.radius * 2.8;
+    const size = this.enemySpriteSize(e);
     ctx.fillStyle = "rgba(0,0,0,0.32)";
     ctx.beginPath();
     ctx.ellipse(0, size * 0.38, size * 0.28, 4, 0, 0, Math.PI * 2);
@@ -1895,15 +2202,19 @@ export class GameEngine {
     const sprite = enemySprite(e.kind);
     if (sprite) {
       const bob = Math.sin(this.animTime * 8 + e.id) * 1.1;
-      ctx.drawImage(
-        sprite,
-        Math.round(-size / 2),
-        Math.round(-size / 2 - 2 + bob),
-        size,
-        size,
-      );
+      this.drawContainedSprite(ctx, sprite, 0, -2 + bob, size);
+      if (e.hitFlash > 0) {
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = Math.min(0.5, e.hitFlash * 4);
+        ctx.fillStyle = e.hitFlashColor ?? "#f4f4f5";
+        ctx.beginPath();
+        ctx.ellipse(0, -2, size * 0.3, size * 0.36, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
     } else {
-      ctx.fillStyle = e.hitFlash > 0.05 ? "#f4f4f5" : def.color;
+      ctx.fillStyle = e.hitFlash > 0.05 ? (e.hitFlashColor ?? "#f4f4f5") : def.color;
       ctx.beginPath();
       ctx.arc(0, 0, e.radius, 0, Math.PI * 2);
       ctx.fill();
@@ -1993,37 +2304,89 @@ export class GameEngine {
     ctx.shadowColor = p.color;
     ctx.shadowBlur = 10;
     if (p.element === "ember") {
+      // Orange teardrop — must not read as a gold lightning bolt.
+      ctx.fillStyle = "#e85d4c";
+      ctx.shadowColor = "#e85d4c";
+      ctx.shadowBlur = 12;
       ctx.beginPath();
-      ctx.moveTo(10, 0);
-      ctx.lineTo(-8, 4);
-      ctx.lineTo(-5, 0);
-      ctx.lineTo(-8, -4);
+      ctx.moveTo(18, 0);
+      ctx.lineTo(-12, 7);
+      ctx.lineTo(-6, 0);
+      ctx.lineTo(-12, -7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#7a2418";
+      ctx.beginPath();
+      ctx.moveTo(-2, 0);
+      ctx.lineTo(-12, 4);
+      ctx.lineTo(-8, 0);
+      ctx.lineTo(-12, -4);
       ctx.closePath();
       ctx.fill();
     } else if (p.element === "frost") {
+      ctx.fillStyle = "#5b9fd4";
+      ctx.shadowColor = "#9fd4f0";
+      ctx.shadowBlur = 12;
       ctx.beginPath();
-      ctx.moveTo(9, 0);
-      ctx.lineTo(0, 4);
-      ctx.lineTo(-8, 0);
-      ctx.lineTo(0, -4);
+      ctx.moveTo(16, 0);
+      ctx.lineTo(0, 8);
+      ctx.lineTo(-14, 0);
+      ctx.lineTo(0, -8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#f2f7fc";
+      ctx.beginPath();
+      ctx.moveTo(7, 0);
+      ctx.lineTo(0, 3.5);
+      ctx.lineTo(-5, 0);
+      ctx.lineTo(0, -3.5);
       ctx.closePath();
       ctx.fill();
     } else if (p.element === "volt") {
-      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
       ctx.strokeStyle = p.color;
+      ctx.lineWidth = 7;
+      ctx.globalAlpha = 0.4;
       ctx.beginPath();
-      ctx.moveTo(-10, 0);
-      ctx.lineTo(-4, -4);
-      ctx.lineTo(1, 3);
-      ctx.lineTo(10, 0);
+      ctx.moveTo(-16, 0);
+      ctx.lineTo(-6, -7);
+      ctx.lineTo(2, 6);
+      ctx.lineTo(16, 0);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 3.2;
+      ctx.strokeStyle = "#f5e9a0";
+      ctx.beginPath();
+      ctx.moveTo(-16, 0);
+      ctx.lineTo(-6, -7);
+      ctx.lineTo(2, 6);
+      ctx.lineTo(16, 0);
       ctx.stroke();
     } else {
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "#1c1e22";
+      ctx.lineWidth = 5;
+      ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.arc(0, 0, p.radius + 1, 0, Math.PI * 2);
+      ctx.moveTo(4, 0);
+      ctx.lineTo(-16, 0);
+      ctx.stroke();
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(0, 0, p.radius + 4, 0, Math.PI * 2);
       ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "#eceff4";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
       ctx.fillStyle = "#2a2e34";
       ctx.beginPath();
-      ctx.arc(2, 0, p.radius * 0.45, 0, Math.PI * 2);
+      ctx.arc(3, 0, p.radius * 0.45, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
@@ -2036,7 +2399,7 @@ export class GameEngine {
     ctx.strokeStyle = p.color;
     ctx.fillStyle = p.color;
     if (p.kind === "ring") {
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size * (1.15 - a * 0.4), 0, Math.PI * 2);
       ctx.stroke();
@@ -2229,15 +2592,25 @@ export class GameEngine {
         z: p.z,
         draw: () => {
           const spr = enemySprite(e.kind);
-          const sz = Math.max(18, Math.min(110, p.s * (e.kind === "boss" ? 1.35 : 1.05)));
+          const sz = Math.max(18, Math.min(110, p.s * (e.kind === "boss" ? 1.5 : 1.05)));
           ctx.save();
           if (e.hitFlash > 0) ctx.globalAlpha = 0.65 + Math.sin(e.hitFlash * 40) * 0.35;
-          if (spr) ctx.drawImage(spr, p.x - sz / 2, p.y - sz * 0.95, sz, sz);
+          if (spr) this.drawContainedSprite(ctx, spr, p.x, p.y - sz * 0.45, sz);
           else {
-            ctx.fillStyle = ENEMIES[e.kind].color;
+            ctx.fillStyle = e.hitFlash > 0 ? (e.hitFlashColor ?? ENEMIES[e.kind].color) : ENEMIES[e.kind].color;
             ctx.beginPath();
             ctx.arc(p.x, p.y - sz * 0.4, sz * 0.28, 0, Math.PI * 2);
             ctx.fill();
+          }
+          if (e.hitFlash > 0 && spr) {
+            ctx.globalCompositeOperation = "lighter";
+            ctx.globalAlpha = Math.min(0.45, e.hitFlash * 3.5);
+            ctx.fillStyle = e.hitFlashColor ?? "#f4f4f5";
+            ctx.beginPath();
+            ctx.ellipse(p.x, p.y - sz * 0.45, sz * 0.26, sz * 0.32, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = "source-over";
+            ctx.globalAlpha = 1;
           }
           const bw = sz * 0.7;
           const pct = Math.max(0, e.hp / e.maxHp);

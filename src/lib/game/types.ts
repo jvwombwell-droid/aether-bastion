@@ -164,6 +164,8 @@ export interface Enemy {
   slowTimer: number;
   slowMul: number;
   hitFlash: number;
+  /** Visual-only tint while flashing; set by the hitting element. */
+  hitFlashColor?: string;
   pathT: number;
 }
 
@@ -185,6 +187,8 @@ export interface Projectile {
   radius: number;
   alive: boolean;
   color: string;
+  /** Seconds until the next trail crumb. Visual only. */
+  trailT: number;
   applyBuff?: BuffId;
   applyBuffChance?: number;
   applyBuffDuration?: number;
