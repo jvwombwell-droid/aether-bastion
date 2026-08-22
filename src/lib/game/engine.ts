@@ -1930,15 +1930,22 @@ export class GameEngine {
       ctx.stroke();
     }
 
+    if (t.role === "watch") this.drawWatchGlow(ctx);
+
     const sprite = towerSprite(t.kind);
-    if (sprite) {
-      const s = 38 + t.tier * 2;
-      ctx.drawImage(sprite, Math.round(-s / 2), Math.round(-s / 2 - 4), s, s);
+    if (t.role === "well") {
+      this.drawWellTower(ctx, t);
     } else {
-      ctx.fillStyle = def.color;
-      ctx.beginPath();
-      ctx.arc(0, 0, 10, 0, Math.PI * 2);
-      ctx.fill();
+      if (sprite) {
+        const s = 38 + t.tier * 2;
+        ctx.drawImage(sprite, Math.round(-s / 2), Math.round(-s / 2 - 4), s, s);
+      } else {
+        ctx.fillStyle = def.color;
+        ctx.beginPath();
+        ctx.arc(0, 0, 10, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (t.role === "watch") this.drawWatchLantern(ctx);
     }
 
     if (selected) {
@@ -1979,6 +1986,56 @@ export class GameEngine {
       ctx.fill();
     }
     ctx.restore();
+  }
+
+  /** Cool watch-light, not Ember orange. */
+  private drawWatchGlow(ctx: CanvasRenderingContext2D) {
+    const pulse = 0.5 + 0.5 * Math.sin(this.animTime * 2.6);
+    const glow = ctx.createRadialGradient(0, -12, 2, 0, -10, 28);
+    glow.addColorStop(0, `rgba(220, 230, 255, ${0.4 + pulse * 0.14})`);
+    glow.addColorStop(0.45, `rgba(160, 190, 220, ${0.16 + pulse * 0.08})`);
+    glow.addColorStop(1, "rgba(160, 190, 220, 0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.ellipse(0, -12, 14, 22, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** Small lantern on the crown — not a 22px lamp-post sticker. */
+  private drawWatchLantern(ctx: CanvasRenderingContext2D) {
+    ctx.fillStyle = "rgba(236, 232, 210, 0.95)";
+    ctx.beginPath();
+    ctx.moveTo(0, -22);
+    ctx.lineTo(5, -16);
+    ctx.lineTo(0, -11);
+    ctx.lineTo(-5, -16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "rgba(180, 210, 240, 0.9)";
+    ctx.beginPath();
+    ctx.arc(0, -16, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** Well replaces the gun. */
+  private drawWellTower(ctx: CanvasRenderingContext2D, t: Tower) {
+    const overlay = getSprite("well");
+    if (overlay) {
+      const s = 36 + t.tier * 2;
+      ctx.drawImage(overlay, Math.round(-s / 2), Math.round(-s / 2 + 1), s, s);
+      return;
+    }
+    ctx.fillStyle = "#6e685c";
+    ctx.beginPath();
+    ctx.ellipse(0, 3, 15, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#9a9384";
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    ctx.fillStyle = "#0d0b12";
+    ctx.beginPath();
+    ctx.ellipse(0, 3, 9.5, 6.8, 0, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   private drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy) {
