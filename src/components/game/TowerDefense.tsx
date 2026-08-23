@@ -818,13 +818,22 @@ export function TowerDefense() {
                     ? `L${snap.level} W${snap.wave + 1} — ${snap.enemiesRemaining} left`
                     : snap.wave >= snap.totalWaves
                       ? "Level clear"
-                      : `Start Wave ${snap.wave + 1}`}
+                      : snap.shiftHold
+                        ? `Start Wave ${snap.wave + 1} · new road`
+                        : `Start Wave ${snap.wave + 1}`}
                 </button>
               )}
             </div>
             {snap.phase === "playing" && snap.wave < snap.totalWaves && !snap.waveActive && (
               nextPreview ? (
-                <WavePreviewPanel preview={nextPreview} />
+                <>
+                  {snap.shiftHold ? (
+                    <p className="px-0.5 text-[11px] leading-snug text-fg-muted">
+                      New road. Convert inland towers or grow the keep, then start.
+                    </p>
+                  ) : null}
+                  <WavePreviewPanel preview={nextPreview} />
+                </>
               ) : (
                 <p className="px-0.5 text-[11px] text-fg-subtle">
                   Level {snap.level}/{snap.totalLevels}

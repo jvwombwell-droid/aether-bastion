@@ -281,6 +281,8 @@ export interface GameSnapshot {
   gameSpeed: GameSpeed;
   /** Seconds remaining on the post-level "front shifts" beat. */
   frontShift: number;
+  /** True after the road moves until the player starts the next wave. */
+  shiftHold: boolean;
   coveringCount: number;
   strandedCount: number;
   /** First-person turret camera from the selected tower. */

@@ -179,6 +179,8 @@ export class GameEngine {
   messageTimer = 0;
   gameSpeed: GameSpeed = 1;
   frontShift = 0;
+  /** Stays true until the next wave starts so the hold is a real turn. */
+  shiftHold = false;
   coveringCount = 0;
   strandedCount = 0;
   fpv = false;
@@ -332,6 +334,7 @@ export class GameEngine {
     this.levelClearTimer = 0;
     this.gameSpeed = 1;
     this.frontShift = 0;
+    this.shiftHold = false;
     this.coveringCount = 0;
     this.strandedCount = 0;
     this.prevPathPoints = [];
@@ -413,6 +416,7 @@ export class GameEngine {
     this.keepWell = saved.keepWell === true;
     this.keepDoorCooldown = 0;
     this.selectedKeep = false;
+    this.shiftHold = false;
     this.level = saved.level;
     this.wave = saved.wave;
     this.phase = saved.phase;
@@ -508,6 +512,19 @@ export class GameEngine {
     this.frontShift = 4.2;
   }
 
+  private openShiftHold(goldNote: string) {
+    this.shiftHold = true;
+    this.selectedKeep = true;
+    this.selectedTowerId = null;
+    this.placement = null;
+    this.fpv = false;
+    this.setMessage(
+      `The front shifts — convert inland towers or grow the keep, then start the next wave. ${this.coveringCount} covering · ${this.strandedCount} inland · ${goldNote}`,
+      99,
+    );
+    this.playSfx("shift");
+  }
+
   private shiftFrontMidLevel() {
     const seed0 = (levelMapSeed(this.level, this.runSeed) ^ 0x51e9e55) >>> 0;
     const seed = pickFrontShiftSeed(seed0, this.keepSpec(), this.towers);
@@ -515,12 +532,7 @@ export class GameEngine {
     this.midShiftDone = true;
     const resupply = midShiftResupply(this.level);
     this.gold += resupply;
-    const nextName = this.levelWaves[this.wave]?.name ?? "the next wave";
-    this.setMessage(
-      `The front shifts — ${nextName} takes the new road. ${this.coveringCount} covering · ${this.strandedCount} inland · +${resupply}g The keep can grow — click it.`,
-      6,
-    );
-    this.playSfx("shift");
+    this.openShiftHold(`+${resupply}g`);
   }
 
   /** Advance to next level: path re-rolls around permanent towers; keep stays. */
@@ -544,12 +556,7 @@ export class GameEngine {
     );
     this.phase = "playing";
     this.levelClearTimer = 0;
-
-    this.setMessage(
-      `The front shifts — ${this.coveringCount} covering · ${stranded} inland · +${bonus + resupply}g The keep can grow — click it.`,
-      6,
-    );
-    this.playSfx("shift");
+    this.openShiftHold(`+${bonus + resupply}g`);
   }
 
   consumeSfx(): string[] {
@@ -661,6 +668,7 @@ export class GameEngine {
       nextWavePreview: this.getNextWavePreview(),
       gameSpeed: this.gameSpeed,
       frontShift: this.frontShift,
+      shiftHold: this.shiftHold,
       coveringCount: this.coveringCount,
       strandedCount: this.strandedCount,
       fpv: this.fpv,
@@ -935,6 +943,7 @@ export class GameEngine {
       }
     }
     this.spawnQueue.sort((a, b) => a.at - b.at);
+    this.shiftHold = false;
     this.setMessage(`L${this.level} · Wave ${this.wave + 1}: ${waveDef.name}`);
   }
 
@@ -1750,7 +1759,7 @@ export class GameEngine {
       this.drawKeepDoor(ctx, this.keepDoorPos());
     }
 
-    if (this.frontShift > 0) this.drawFrontShift(ctx);
+    if (this.frontShift > 0 || this.shiftHold) this.drawFrontShift(ctx);
 
     ctx.restore();
   }
@@ -2209,8 +2218,11 @@ export class GameEngine {
     ctx.ellipse(0, 16, 12, 5, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    if (this.frontShift > 0 || !t.covering) {
-      const pulse = this.frontShift > 0 ? 0.45 + 0.55 * Math.sin(this.animTime * 6) : 0.55;
+    if (this.frontShift > 0 || this.shiftHold || !t.covering) {
+      const pulse =
+        this.frontShift > 0 || this.shiftHold
+          ? 0.45 + 0.55 * Math.sin(this.animTime * 6)
+          : 0.55;
       ctx.strokeStyle = t.covering
         ? `rgba(90, 158, 111, ${0.35 + pulse * 0.5})`
         : `rgba(212, 160, 64, ${0.4 + pulse * 0.45})`;
@@ -2437,14 +2449,16 @@ export class GameEngine {
   }
 
   private drawFrontShift(ctx: CanvasRenderingContext2D) {
-    const fade = Math.min(1, this.frontShift / 0.6, (4.2 - this.frontShift) / 0.45);
+    const fade = this.shiftHold
+      ? 1
+      : Math.min(1, this.frontShift / 0.6, (4.2 - this.frontShift) / 0.45);
     const mid = (COLS * CELL) / 2;
     ctx.save();
     ctx.globalAlpha = fade;
     ctx.fillStyle = "rgba(8,8,12,0.62)";
-    ctx.fillRect(mid - 210, 10, 420, 50);
+    ctx.fillRect(mid - 250, 10, 500, 50);
     ctx.strokeStyle = "rgba(212,196,160,0.4)";
-    ctx.strokeRect(mid - 210, 10, 420, 50);
+    ctx.strokeRect(mid - 250, 10, 500, 50);
     ctx.fillStyle = "#e8e0d0";
     ctx.font = "700 14px Segoe UI, sans-serif";
     ctx.textAlign = "center";
@@ -2453,7 +2467,9 @@ export class GameEngine {
     ctx.font = "500 11px Segoe UI, sans-serif";
     ctx.fillStyle = "#a8a29a";
     ctx.fillText(
-      `${this.coveringCount} still cover the road · ${this.strandedCount} now inland`,
+      this.shiftHold
+        ? `${this.coveringCount} covering · ${this.strandedCount} inland — convert or grow the keep, then start`
+        : `${this.coveringCount} still cover the road · ${this.strandedCount} now inland`,
       mid,
       44,
     );
