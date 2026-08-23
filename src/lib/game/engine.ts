@@ -43,7 +43,7 @@ import {
   pickKeepOrigin,
   type KeepFootprint,
 } from "./mapgen";
-import { damageMultiplier } from "./combat";
+import { combatRulesFor, damageMultiplier } from "./combat";
 import type { SavedRun, SavedTower } from "./persist";
 import { renderGame } from "./render";
 import type {
@@ -82,6 +82,7 @@ function dist2(ax: number, ay: number, bx: number, by: number) {
 
 const FRONT_SHIFT_SEED_ATTEMPTS = 64;
 const FRONT_SHIFT_SEED_STRIDE = 0x9e3779b9;
+const SLIPSTREAM_SPEED_MUL = 1.65;
 
 type ShiftTower = Pick<Tower, "col" | "row" | "x" | "y" | "kind" | "tier" | "role">;
 
@@ -255,6 +256,20 @@ export class GameEngine {
   /** Test seam: elemental hit pop. */
   emitHitFxForTest(element: Element) {
     this.elementalHit(80, 80, element);
+  }
+
+  /** Test seam: jump to a campaign level on the current map/towers. Reloads waves. */
+  beginLevelForTest(level: number) {
+    this.level = Math.max(1, Math.min(TOTAL_LEVELS, level));
+    this.wave = 0;
+    this.waveActive = false;
+    this.shiftHold = false;
+    this.midShiftDone = false;
+    this.levelWaves = scaleWavesForLevel(this.level);
+  }
+
+  effectiveSpeedForTest(e: Enemy): number {
+    return this.effectiveSpeed(e);
   }
 
   private loadMapForLevel(
@@ -1063,12 +1078,21 @@ export class GameEngine {
     return base + Math.min(seg, along);
   }
 
+  private hasFirstGun(): boolean {
+    return this.towers.some(
+      (t) => t.targetMode === "first" && (t.role === "battery" || t.role === "watch"),
+    );
+  }
+
   private effectiveSpeed(e: Enemy): number {
     let mul = 1;
     if (e.slowTimer > 0) mul *= e.slowMul;
     for (const b of e.buffs) {
       const def = BUFFS[b.id];
       if (def.speedMul) mul *= def.speedMul;
+    }
+    if (levelScript(this.level).rule === "slipstream" && e.kind === "runner" && !this.hasFirstGun()) {
+      mul *= SLIPSTREAM_SPEED_MUL;
     }
     return e.speed * mul;
   }
@@ -1080,7 +1104,7 @@ export class GameEngine {
     opts?: { slow?: number; fromX?: number; fromY?: number },
   ) {
     if (!enemy.alive) return;
-    const mul = damageMultiplier(element, enemy);
+    const mul = damageMultiplier(element, enemy, combatRulesFor(levelScript(this.level).rule));
     const dmg = Math.max(1, Math.round(raw * mul));
     enemy.hp -= dmg;
     enemy.hitFlash = 0.12;

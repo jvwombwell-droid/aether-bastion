@@ -1,4 +1,11 @@
-import { LEVEL_SCRIPTS, levelScript, midShiftAfterWave } from "./levels";
+import {
+  LEVEL_SCRIPTS,
+  levelRule,
+  levelScript,
+  midShiftAfterWave,
+  reconBoardLine,
+  type LevelRule,
+} from "./levels";
 import type {
   BuffDef,
   BuffId,
@@ -10,7 +17,8 @@ import type {
   WaveDef,
 } from "./types";
 
-export { LEVEL_SCRIPTS, levelScript, midShiftAfterWave };
+export { LEVEL_SCRIPTS, levelRule, levelScript, midShiftAfterWave, reconBoardLine };
+export type { LevelRule };
 
 export const CELL = 40;
 export const COLS = 22;
