@@ -110,7 +110,7 @@ export interface Vec2 {
 export type TargetMode = "first" | "strong" | "close" | "last";
 
 /** Combat job. Inland towers convert; they are never sold. */
-export type TowerRole = "battery" | "watch" | "well";
+export type TowerRole = "battery" | "watch" | "well" | "beacon";
 
 export type GameSpeed = 1 | 2 | 3;
 
@@ -270,7 +270,12 @@ export interface GameSnapshot {
   selectedKeep: boolean;
   keepFortify: number;
   keepDoorGun: boolean;
+  keepDoorTier: number;
   keepWell: boolean;
+  /** Campaign level title */
+  levelName: string;
+  /** 1-based wave after which the road moves on this level */
+  midShiftAfter: number;
   placement: PlacementMode;
   score: number;
   message: string | null;

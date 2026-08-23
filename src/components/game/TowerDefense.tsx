@@ -562,10 +562,7 @@ export function TowerDefense() {
   };
 
   const upgradeKeepDoorGun = () => {
-    // Engine agent adds upgradeKeepDoorGun; same contract as buyKeepDoorGun.
-    const upgradeFn = (engine as GameEngine & { upgradeKeepDoorGun?: () => boolean })
-      .upgradeKeepDoorGun;
-    if (upgradeFn?.()) audio.beep(520, 0.08, "square", 0.04);
+    if (engine.upgradeKeepDoorGun()) audio.beep(520, 0.08, "square", 0.04);
     else audio.beep(140, 0.06);
     persistNow();
     pushSnap();
