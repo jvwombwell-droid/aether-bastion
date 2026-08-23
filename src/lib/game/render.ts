@@ -1,22 +1,59 @@
-import {
-  BUFFS,
-  CELL,
-  COLS,
-  ENEMIES,
-  ROWS,
-  TOWERS,
-  cellCenter,
-  keepDoorStats,
-  towerRangeFor,
-} from "./config";
+import { BUFFS, CELL, COLS, ENEMIES, ROWS, TOWERS, cellCenter, towerRangeFor } from "./config";
 import { damageMultiplier } from "./combat";
-import type { GameEngine } from "./engine";
+import type { KeepFootprint } from "./mapgen";
 import { enemySprite, getSprite, towerSprite } from "./sprites";
-import type { Enemy, FloatingText, Particle, Projectile, Tower, Vec2 } from "./types";
+import type {
+  Cell,
+  Enemy,
+  FloatingText,
+  GamePhase,
+  Particle,
+  PlacementMode,
+  Projectile,
+  Tower,
+  Vec2,
+} from "./types";
+
+/** Fields and methods GameEngine exposes for canvas drawing. */
+export type RenderHost = {
+  phase: GamePhase;
+  fpv: boolean;
+  selectedTowerId: number | null;
+  placement: PlacementMode;
+  hoverCol: number;
+  hoverRow: number;
+  shake: number;
+  animTime: number;
+  towers: Tower[];
+  enemies: Enemy[];
+  projectiles: Projectile[];
+  particles: Particle[];
+  floats: FloatingText[];
+  pathPoints: Vec2[];
+  prevPathPoints: Vec2[];
+  frontShift: number;
+  shiftHold: boolean;
+  lives: number;
+  selectedKeep: boolean;
+  keepWell: boolean;
+  keepDoorGun: boolean;
+  cells: Cell[][];
+  tilePatternCache: Map<string, CanvasPattern>;
+  coveringCount: number;
+  strandedCount: number;
+  fpvYaw: number;
+  fpvLookYaw: number;
+  fpvPitch: number;
+  fpvLookPitch: number;
+  getSelectedTower(): Tower | null;
+  keepSpec(): KeepFootprint;
+  keepDoorPos(): Vec2;
+  findTarget(tower: Tower): Enemy | null;
+};
 
 /** Canvas drawing for GameEngine. Simulation stays in engine.ts. */
 export function renderGame(
-  engine: GameEngine,
+  engine: RenderHost,
   ctx: CanvasRenderingContext2D,
   viewW: number,
   viewH: number,
@@ -82,7 +119,7 @@ export function renderGame(
 }
 
 function ensureTilePattern(
-  engine: GameEngine,
+  engine: RenderHost,
   ctx: CanvasRenderingContext2D,
   key: "grass" | "dirt",
 ): CanvasPattern | null {
@@ -104,7 +141,7 @@ function ensureTilePattern(
 
 /** Fill a rect with a repeating ground sprite, or a dusk color if it is not loaded. */
 function fillGround(
-  engine: GameEngine,
+  engine: RenderHost,
   ctx: CanvasRenderingContext2D,
   key: "grass" | "dirt",
   x: number,
@@ -166,11 +203,11 @@ function strokeLane(ctx: CanvasRenderingContext2D, points: Vec2[], color: string
   ctx.stroke();
 }
 
-function drawMap(engine: GameEngine, ctx: CanvasRenderingContext2D) {
+function drawMap(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   fillGround(engine, ctx, "grass", 0, 0, COLS * CELL, ROWS * CELL);
 }
 
-function drawPath(engine: GameEngine, ctx: CanvasRenderingContext2D) {
+function drawPath(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   if (engine.frontShift > 0 && engine.prevPathPoints.length > 1) {
     const fade = engine.frontShift / 4.2;
     ctx.save();
@@ -247,7 +284,7 @@ function drawDuskWash(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
-function drawAetherVein(engine: GameEngine, ctx: CanvasRenderingContext2D) {
+function drawAetherVein(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   if (engine.pathPoints.length < 2) return;
   const pulse = engine.frontShift > 0 ? 0.16 + 0.1 * Math.sin(engine.animTime * 7) : 0.08;
   ctx.save();
@@ -257,7 +294,7 @@ function drawAetherVein(engine: GameEngine, ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
-function drawEndpointPads(engine: GameEngine, ctx: CanvasRenderingContext2D) {
+function drawEndpointPads(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   if (engine.pathPoints.length === 0) return;
   const spawn = engine.pathPoints[0]!;
   const keep = engine.pathPoints[engine.pathPoints.length - 1]!;
@@ -283,7 +320,7 @@ function drawEndpointPads(engine: GameEngine, ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
-function drawSpawn(engine: GameEngine, ctx: CanvasRenderingContext2D, pos: Vec2) {
+function drawSpawn(engine: RenderHost, ctx: CanvasRenderingContext2D, pos: Vec2) {
   const pulse = 0.5 + 0.5 * Math.sin(engine.animTime * 3.2);
   ctx.save();
   ctx.translate(pos.x, pos.y);
@@ -311,7 +348,7 @@ function drawSpawn(engine: GameEngine, ctx: CanvasRenderingContext2D, pos: Vec2)
   ctx.restore();
 }
 
-function drawKeep(engine: GameEngine, ctx: CanvasRenderingContext2D) {
+function drawKeep(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   const keep = engine.keepSpec();
   const pos = {
     x: keep.origin[0] * CELL + CELL,
@@ -380,7 +417,7 @@ function drawKeep(engine: GameEngine, ctx: CanvasRenderingContext2D) {
 
   if (engine.selectedKeep && engine.keepDoorGun) {
     const door = engine.keepDoorPos();
-    const range = keepDoorStats(engine.keepDoorTier || 1, engine.keepFortify, engine.level).range;
+    const range = TOWERS.iron.tiers[0]!.range;
     ctx.save();
     ctx.strokeStyle = TOWERS.iron.color + "55";
     ctx.fillStyle = TOWERS.iron.color + "12";
@@ -393,7 +430,7 @@ function drawKeep(engine: GameEngine, ctx: CanvasRenderingContext2D) {
   }
 }
 
-function drawKeepDoor(engine: GameEngine, ctx: CanvasRenderingContext2D, pos: Vec2) {
+function drawKeepDoor(engine: RenderHost, ctx: CanvasRenderingContext2D, pos: Vec2) {
   ctx.save();
   ctx.translate(pos.x, pos.y);
   const pulse = 0.5 + 0.5 * Math.sin(engine.animTime * 2.8);
@@ -469,7 +506,7 @@ function drawLabelPill(
 }
 
 function drawRange(ctx: CanvasRenderingContext2D, t: Tower) {
-  if (t.role === "well" || t.role === "beacon") return;
+  if (t.role === "well") return;
   const range = towerRangeFor(t.kind, t.tier, t.role);
   ctx.save();
   ctx.strokeStyle = TOWERS[t.kind].color + "55";
@@ -483,7 +520,7 @@ function drawRange(ctx: CanvasRenderingContext2D, t: Tower) {
 }
 
 function drawPlacementGhost(
-  engine: GameEngine,
+  engine: RenderHost,
   ctx: CanvasRenderingContext2D,
   col: number,
   row: number,
@@ -520,7 +557,7 @@ function drawPlacementGhost(
   ctx.restore();
 }
 
-function drawTower(engine: GameEngine, ctx: CanvasRenderingContext2D, t: Tower, selected: boolean) {
+function drawTower(engine: RenderHost, ctx: CanvasRenderingContext2D, t: Tower, selected: boolean) {
   const def = TOWERS[t.kind];
   ctx.save();
   ctx.translate(t.x, t.y);
@@ -545,7 +582,6 @@ function drawTower(engine: GameEngine, ctx: CanvasRenderingContext2D, t: Tower, 
   }
 
   if (t.role === "watch") drawWatchGlow(engine, ctx);
-  if (t.role === "beacon") drawBeaconGlow(engine, ctx);
 
   const sprite = towerSprite(t.kind);
   if (t.role === "well") {
@@ -577,12 +613,6 @@ function drawTower(engine: GameEngine, ctx: CanvasRenderingContext2D, t: Tower, 
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("WELL", 0, 24);
-  } else if (t.role === "beacon") {
-    ctx.fillStyle = "rgba(196,160,220,0.95)";
-    ctx.font = "700 8px Segoe UI, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("BEACON", 0, 24);
   } else if (t.role === "watch") {
     ctx.fillStyle = "rgba(160,200,220,0.95)";
     ctx.font = "700 8px Segoe UI, sans-serif";
@@ -609,20 +639,8 @@ function drawTower(engine: GameEngine, ctx: CanvasRenderingContext2D, t: Tower, 
   ctx.restore();
 }
 
-function drawBeaconGlow(engine: GameEngine, ctx: CanvasRenderingContext2D) {
-  const pulse = 0.5 + 0.5 * Math.sin(engine.animTime * 3.1);
-  const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 30);
-  glow.addColorStop(0, `rgba(220, 190, 255, ${0.45 + pulse * 0.16})`);
-  glow.addColorStop(0.5, `rgba(160, 120, 210, ${0.18 + pulse * 0.08})`);
-  glow.addColorStop(1, "rgba(160, 120, 210, 0)");
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.arc(0, 0, 30, 0, Math.PI * 2);
-  ctx.fill();
-}
-
 /** Cool watch-light, not Ember orange. */
-function drawWatchGlow(engine: GameEngine, ctx: CanvasRenderingContext2D) {
+function drawWatchGlow(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   const pulse = 0.5 + 0.5 * Math.sin(engine.animTime * 2.6);
   const glow = ctx.createRadialGradient(0, -12, 2, 0, -10, 28);
   glow.addColorStop(0, `rgba(220, 230, 255, ${0.4 + pulse * 0.14})`);
@@ -695,7 +713,7 @@ function drawContainedSprite(
   ctx.drawImage(sprite, Math.round(x - w / 2), Math.round(y - h / 2), w, h);
 }
 
-function drawEnemy(engine: GameEngine, ctx: CanvasRenderingContext2D, e: Enemy) {
+function drawEnemy(engine: RenderHost, ctx: CanvasRenderingContext2D, e: Enemy) {
   const def = ENEMIES[e.kind];
   ctx.save();
   ctx.translate(e.x, e.y);
@@ -779,7 +797,7 @@ function drawEnemy(engine: GameEngine, ctx: CanvasRenderingContext2D, e: Enemy) 
   ctx.restore();
 }
 
-function drawFrontShift(engine: GameEngine, ctx: CanvasRenderingContext2D) {
+function drawFrontShift(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   const fade = engine.shiftHold
     ? 1
     : Math.min(1, engine.frontShift / 0.6, (4.2 - engine.frontShift) / 0.45);
@@ -977,7 +995,7 @@ function projectFpv(
 }
 
 function drawFpv(
-  engine: GameEngine,
+  engine: RenderHost,
   ctx: CanvasRenderingContext2D,
   vw: number,
   vh: number,
@@ -1258,7 +1276,7 @@ function drawFpv(
 }
 
 function drawFpvMinimap(
-  engine: GameEngine,
+  engine: RenderHost,
   ctx: CanvasRenderingContext2D,
   vw: number,
   vh: number,

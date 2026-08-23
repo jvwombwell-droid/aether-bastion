@@ -23,7 +23,6 @@ import {
   KEEP_DOOR_MAX_TIER,
   KEEP_FORTIFY_LIVES,
   KEEP_WELL_COST,
-  WATCH_BOSS_DAMAGE_MUL,
   keepDoorStats,
   keepDoorUpgradeCost,
   keepFortifyCost,
@@ -133,9 +132,8 @@ function evaluateShiftSeed(
   blockedTowers: Array<[number, number]>,
   keep: KeepFootprint,
   towers: ShiftTower[],
-  attractCells: Array<[number, number]> = [],
 ): { covering: number; stranded: number } {
-  const cells = generatePathCells(seed, blockedTowers, keep, blockedTowers, attractCells);
+  const cells = generatePathCells(seed, blockedTowers, keep, blockedTowers);
   const points = pathCellsToPoints(cells);
   return countPathCoverage(towers, points);
 }
@@ -150,10 +148,7 @@ function pickFrontShiftSeed(seed0: number, keep: KeepFootprint, towers: ShiftTow
 
   for (let i = 0; i < FRONT_SHIFT_SEED_ATTEMPTS; i++) {
     const seed = (seed0 + i * FRONT_SHIFT_SEED_STRIDE) >>> 0;
-    const attract = towers
-      .filter((t) => t.role === "beacon")
-      .map((t) => [t.col, t.row] as [number, number]);
-    const { covering, stranded } = evaluateShiftSeed(seed, blocked, keep, towers, attract);
+    const { covering, stranded } = evaluateShiftSeed(seed, blocked, keep, towers);
     const score = shiftCoverageScore(covering, stranded, n);
     if (!bestScore || scoreBetter(score, bestScore)) {
       bestScore = score;
@@ -243,10 +238,6 @@ export class GameEngine {
     return keepFootprint(this.keepOrigin[0], this.keepOrigin[1]);
   }
 
-  private beaconCells(): Array<[number, number]> {
-    return this.towers.filter((t) => t.role === "beacon").map((t) => [t.col, t.row]);
-  }
-
   isKeepCell(col: number, row: number): boolean {
     return this.keepSpec().cells.some(([c, r]) => c === col && r === row);
   }
@@ -271,7 +262,7 @@ export class GameEngine {
     const keep = this.keepSpec();
     const seed = seedOverride ?? levelMapSeed(level, this.runSeed);
     const blockedAll = [...keep.cells, ...blocked];
-    this.pathCells = generatePathCells(seed, blockedAll, keep, blocked, this.beaconCells());
+    this.pathCells = generatePathCells(seed, blockedAll, keep, blocked);
     this.pathPoints = pathCellsToPoints(this.pathCells);
     this.pathLengths = buildPathLengthsFromPoints(this.pathPoints);
     this.pathTotal = this.pathLengths[this.pathLengths.length - 1] ?? 1;
@@ -342,7 +333,7 @@ export class GameEngine {
     this.selectedTowerId = null;
     this.placement = null;
     this.score = 0;
-    this.message = `Level 1 — First Watch. Place a tower beside the road. After wave 2 the front moves. Towers stay forever.`;
+    this.message = `Level 1 — the keep holds the corner. Place a tower beside the road, then start wave 1. Towers stay forever.`;
     this.messageTimer = 4;
     this.spawnQueue = [];
     this.waveTime = 0;
@@ -957,8 +948,7 @@ export class GameEngine {
     const target = this.findKeepDoorTarget();
     if (!target) return false;
     this.fireKeepDoor(target);
-    this.keepDoorCooldown =
-      1 / keepDoorStats(this.keepDoorTier || 1, this.keepFortify, this.level).fireRate;
+    this.keepDoorCooldown = 1 / TOWERS.iron.tiers[0]!.fireRate;
     return true;
   }
 
@@ -1028,7 +1018,7 @@ export class GameEngine {
         remaining: spawnBuffDuration ?? BUFFS[spawnBuff].duration,
       });
     }
-    const bossExtra = def.isBoss ? 1 + (this.level - 1) * 0.08 : 1;
+    const bossExtra = def.isBoss ? Math.pow(1.22, this.level - 1) : 1;
     // All combat stats are strictly positive — clamp so bad scale never goes ≤0
     const hp = Math.max(1, Math.round(def.hp * Math.max(0, hpMul) * Math.max(0, bossExtra)));
     const spd = Math.max(8, def.speed * Math.max(0, speedMul));
@@ -1137,7 +1127,7 @@ export class GameEngine {
       this.playSfx(ENEMIES[enemy.kind].isBoss ? "bossKill" : "kill");
     } else {
       if (opts?.fromX != null) this.elementalHit(enemy.x, enemy.y, element);
-      this.playSfx(enemy.buffs.some((b) => b.id === "shred") ? "shred" : `hit:${element}`);
+      this.playSfx(enemy.buffs.some((b) => b.id === "shred") ? "shred" : "hit");
     }
   }
 
@@ -1242,10 +1232,7 @@ export class GameEngine {
       y: tower.y,
       vx: (dx / len) * speed,
       vy: (dy / len) * speed,
-      damage:
-        tower.role === "watch" && ENEMIES[target.kind].isBoss
-          ? Math.round(tier.damage * WATCH_BOSS_DAMAGE_MUL)
-          : tier.damage,
+      damage: tier.damage,
       element: tower.kind,
       speed,
       targetId: target.id,
@@ -1269,7 +1256,7 @@ export class GameEngine {
       chainBuffDuration: tier.chainBuffDuration,
     });
     this.muzzleFlash(tower, dx / len, dy / len);
-    this.playSfx(`fire:${tower.kind}`);
+    this.playSfx("fire");
   }
 
   private impactProjectile(p: Projectile, hit: Enemy | null) {
@@ -1392,7 +1379,7 @@ export class GameEngine {
 
   private findKeepDoorTarget(): Enemy | null {
     const door = this.keepDoorPos();
-    const range = keepDoorStats(this.keepDoorTier || 1, this.keepFortify, this.level).range;
+    const range = TOWERS.iron.tiers[0]!.range;
     const range2 = range * range;
     let best: Enemy | null = null;
     let bestProgress = -1;
@@ -1410,37 +1397,36 @@ export class GameEngine {
 
   private fireKeepDoor(target: Enemy) {
     const door = this.keepDoorPos();
-    const iron = TOWERS.iron.tiers[Math.max(0, (this.keepDoorTier || 1) - 1)]!;
-    const stats = keepDoorStats(this.keepDoorTier || 1, this.keepFortify, this.level);
+    const tier = TOWERS.iron.tiers[0]!;
     const dx = target.x - door.x;
     const dy = target.y - door.y;
     const len = Math.hypot(dx, dy) || 1;
-    const speed = iron.projectileSpeed;
+    const speed = tier.projectileSpeed;
     this.projectiles.push({
       id: id(),
       x: door.x,
       y: door.y,
       vx: (dx / len) * speed,
       vy: (dy / len) * speed,
-      damage: stats.damage,
+      damage: tier.damage,
       element: "iron",
       speed,
       targetId: target.id,
-      splash: stats.splash,
-      slow: iron.slow,
-      chain: iron.chain,
+      splash: tier.splash,
+      slow: tier.slow,
+      chain: tier.chain,
       chained: 0,
       ttl: 2.5,
       radius: 5,
       alive: true,
       color: TOWERS.iron.color,
       trailT: 0.03,
-      applyBuff: iron.applyBuff,
-      applyBuffChance: stats.applyBuffChance,
-      applyBuffDuration: stats.applyBuffDuration,
+      applyBuff: tier.applyBuff,
+      applyBuffChance: tier.applyBuffChance,
+      applyBuffDuration: tier.applyBuffDuration,
     });
     this.muzzleFlashAt(door.x, door.y, "iron", dx / len, dy / len);
-    this.playSfx("fire:iron");
+    this.playSfx("fire");
   }
 
   private muzzleFlash(tower: Tower, ux: number, uy: number) {
@@ -1640,7 +1626,7 @@ export class GameEngine {
       this.enemies = this.enemies.filter((e) => e.alive || e.hitFlash > 0);
 
       for (const t of this.towers) {
-        if (t.role === "well" || t.role === "beacon") continue;
+        if (t.role === "well") continue;
         t.cooldown -= cap;
         if (t.cooldown > 0) continue;
         const target = this.findTarget(t);
@@ -1655,8 +1641,7 @@ export class GameEngine {
           const doorTarget = this.findKeepDoorTarget();
           if (doorTarget) {
             this.fireKeepDoor(doorTarget);
-            this.keepDoorCooldown =
-              1 / keepDoorStats(this.keepDoorTier || 1, this.keepFortify, this.level).fireRate;
+            this.keepDoorCooldown = 1 / TOWERS.iron.tiers[0]!.fireRate;
           }
         }
       }
