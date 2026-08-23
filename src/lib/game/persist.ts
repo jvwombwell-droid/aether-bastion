@@ -1,7 +1,7 @@
 import type { GameSpeed, TargetMode, TowerKind, TowerRole } from "./types";
 
 export const SAVE_KEY = "aether-bastion-run";
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 export type SavedPhase = "playing" | "paused" | "levelclear";
 
@@ -17,7 +17,7 @@ export interface SavedTower {
 }
 
 export interface SavedRun {
-  version: 3;
+  version: 4;
   nextId: number;
   runSeed: number;
   level: number;
@@ -34,12 +34,13 @@ export interface SavedRun {
   midShiftDone: boolean;
   keepFortify: number;
   keepDoorGun: boolean;
+  keepDoorTier: number;
   keepWell: boolean;
 }
 
 const TOWER_KINDS: readonly TowerKind[] = ["ember", "frost", "volt", "iron"];
 const TARGET_MODES: readonly TargetMode[] = ["first", "strong", "close", "last"];
-const TOWER_ROLES: readonly TowerRole[] = ["battery", "watch", "well"];
+const TOWER_ROLES: readonly TowerRole[] = ["battery", "watch", "well", "beacon"];
 const PHASES: readonly SavedPhase[] = ["playing", "paused", "levelclear"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -99,7 +100,7 @@ function isSavedTower(value: unknown): value is SavedTower {
 
 export function parseSavedRun(data: unknown): SavedRun | null {
   if (!isRecord(data)) return null;
-  if (data.version !== 2 && data.version !== 3) return null;
+  if (data.version !== 2 && data.version !== 3 && data.version !== 4) return null;
   if (typeof data.nextId !== "number" || !Number.isFinite(data.nextId)) return null;
   if (typeof data.runSeed !== "number" || !Number.isFinite(data.runSeed)) return null;
   if (typeof data.level !== "number" || !Number.isFinite(data.level)) return null;
@@ -119,15 +120,22 @@ export function parseSavedRun(data: unknown): SavedRun | null {
 
   let keepDoorGun = false;
   let keepWell = false;
-  if (data.version === 3) {
+  let keepDoorTier = 0;
+  if (data.version === 3 || data.version === 4) {
     if (typeof data.keepDoorGun !== "boolean") return null;
     if (typeof data.keepWell !== "boolean") return null;
     keepDoorGun = data.keepDoorGun;
     keepWell = data.keepWell;
   }
+  if (data.version === 4) {
+    if (typeof data.keepDoorTier !== "number" || !Number.isFinite(data.keepDoorTier)) return null;
+    keepDoorTier = Math.max(0, Math.floor(data.keepDoorTier));
+  } else if (keepDoorGun) {
+    keepDoorTier = 1;
+  }
 
   return {
-    version: 3,
+    version: 4,
     nextId: data.nextId,
     runSeed: data.runSeed,
     level: data.level,
@@ -144,6 +152,7 @@ export function parseSavedRun(data: unknown): SavedRun | null {
     midShiftDone: data.midShiftDone,
     keepFortify: data.keepFortify,
     keepDoorGun,
+    keepDoorTier,
     keepWell,
   };
 }

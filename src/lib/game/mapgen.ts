@@ -79,6 +79,8 @@ const T1_BATTERY_RANGE = towerRangeFor("ember", 1, "battery");
 const T1_BATTERY_RANGE2 = T1_BATTERY_RANGE * T1_BATTERY_RANGE;
 /** Per covering tower. Stacks, so a cluster is much more expensive than one gun. */
 const AVOID_CELL_COST = 16;
+/** Per beacon. Negative so Dijkstra prefers cells near a Beacon. */
+const ATTRACT_CELL_COST = -18;
 const NO_AVOID: Map<string, number> = new Map();
 
 /**
@@ -114,6 +116,46 @@ function buildAvoidCost(
     }
   }
   return cost;
+}
+
+/** Cheaper cells in T1 battery range of attract towers (door exempt). */
+function buildAttractCost(
+  attractCells: Array<[number, number]>,
+  door?: [number, number],
+): Map<string, number> {
+  const cost = new Map<string, number>();
+  if (!attractCells.length) return cost;
+  const exempt = new Set<string>();
+  if (door) {
+    exempt.add(key(door[0], door[1]));
+    for (const [dc, dr] of DIRS) exempt.add(key(door[0] + dc, door[1] + dr));
+  }
+  const span = Math.ceil(T1_BATTERY_RANGE / CELL);
+  for (const [tc, tr] of attractCells) {
+    const tpos = cellCenter(tc, tr);
+    for (let r = tr - span; r <= tr + span; r++) {
+      for (let c = tc - span; c <= tc + span; c++) {
+        if (!inBounds(c, r)) continue;
+        const k = key(c, r);
+        if (exempt.has(k)) continue;
+        const p = cellCenter(c, r);
+        const dx = tpos.x - p.x;
+        const dy = tpos.y - p.y;
+        if (dx * dx + dy * dy <= T1_BATTERY_RANGE2) {
+          cost.set(k, (cost.get(k) ?? 0) + ATTRACT_CELL_COST);
+        }
+      }
+    }
+  }
+  return cost;
+}
+
+function mergePathCosts(a: Map<string, number>, b: Map<string, number>): Map<string, number> {
+  if (b.size === 0) return a;
+  if (a.size === 0) return b;
+  const out = new Map(a);
+  for (const [k, v] of b) out.set(k, (out.get(k) ?? 0) + v);
+  return out;
 }
 
 /**
@@ -253,13 +295,14 @@ export function generatePathCells(
   blockedCells: Array<[number, number]> = [],
   keep?: KeepFootprint,
   avoidCells: Array<[number, number]> = [],
+  attractCells: Array<[number, number]> = [],
 ): Array<[number, number]> {
   const blocked = new Set(
     [...blockedCells, ...(keep?.cells ?? [])].map(([c, r]) => key(c, r)),
   );
   const { minLen, maxLen } = coverageBounds(blocked);
   const goal = keep?.door;
-  const avoidCost = buildAvoidCost(avoidCells, goal);
+  const avoidCost = mergePathCosts(buildAvoidCost(avoidCells, goal), buildAttractCost(attractCells, goal));
 
   let best: Array<[number, number]> | null = null;
   let bestScore = Infinity;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MID_SHIFT_WAVE, START_GOLD, cellCenter, towerRangeFor, wellIncome } from "./config";
+import { START_GOLD, cellCenter, midShiftAfterWave, towerRangeFor, wellIncome } from "./config";
 import { GameEngine } from "./engine";
 import { keepFootprint } from "./mapgen";
 
@@ -83,10 +83,11 @@ function placeCoveringAlongPath(engine: GameEngine, count: number) {
 }
 
 function fireMidShift(engine: GameEngine) {
-  engine.wave = MID_SHIFT_WAVE - 2;
+  const after = midShiftAfterWave(engine.level);
+  engine.wave = after - 1;
   engine.emptyWaveForTest();
   engine.update(0.2);
-  expect(engine.wave).toBe(MID_SHIFT_WAVE - 1);
+  expect(engine.wave).toBe(after);
   expect(engine.midShiftDone).toBe(true);
 }
 
@@ -156,9 +157,12 @@ describe("living keep", () => {
     }
   });
 
-  it("shifts the road after wave 4 clears, before Hex Tide", () => {
+  it("shifts the First Watch road after wave 2 clears", () => {
     const e = new GameEngine();
     e.reset();
+    expect(e.snapshot().levelName).toBe("First Watch");
+    expect(e.snapshot().midShiftAfter).toBe(2);
+    expect(e.snapshot().keepDoorTier).toBe(0);
     const before = e.pathCells.map(([c, r]) => `${c},${r}`).join("|");
     fireMidShift(e);
     const after = e.pathCells.map(([c, r]) => `${c},${r}`).join("|");
@@ -166,6 +170,8 @@ describe("living keep", () => {
     const keep = keepFootprint(e.keepOrigin[0], e.keepOrigin[1]);
     expect(e.pathCells[e.pathCells.length - 1]).toEqual(keep.door);
     expect(e.towers).toHaveLength(0);
+    expect(e.wave).toBe(2);
+    expect(e.midShiftDone).toBe(true);
   });
 
   it("keeps the only covering tower covering after the mid-level front shift", () => {
@@ -325,7 +331,8 @@ describe("living keep", () => {
     const saved = a.exportRun();
     expect(saved).not.toBeNull();
     if (!saved) return;
-    expect(saved.version).toBe(3);
+    expect(saved.version).toBe(4);
+    expect(saved.keepDoorTier).toBe(0);
     expect(saved.towers[0]?.role).toBe("watch");
 
     const b = new GameEngine();

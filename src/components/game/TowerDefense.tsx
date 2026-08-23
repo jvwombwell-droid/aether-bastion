@@ -13,29 +13,31 @@ import {
   Volume2,
   VolumeX,
   Layers,
-  Eye,
   Film,
 } from "lucide-react";
 import { GameEngine } from "@/lib/game/engine";
 import {
-  BASE_WAVES,
   BUFFS,
   ELEMENT_COLOR,
   ELEMENT_LABEL,
   ENEMIES,
+  KEEP_DOOR_MAX_TIER,
+  LEVEL_SCRIPTS,
   MATCHUP,
   MAX_TIER,
   MATCHUP_MANTRA,
   TOTAL_LEVELS,
   TOWERS,
   WAVES_PER_LEVEL,
+  keepDoorUpgradeCost,
   keepFortifyCost,
   wellIncome,
-  MID_SHIFT_WAVE,
   KEEP_FORTIFY_LIVES,
   KEEP_DOOR_GUN_COST,
   KEEP_WELL_COST,
   MAX_KEEP_FORTIFY,
+  levelScript,
+  midShiftAfterWave,
   upgradeCost,
 } from "@/lib/game/config";
 import type {
@@ -57,15 +59,31 @@ const ROLE_LABEL: Record<TowerRole, string> = {
   battery: "Battery",
   watch: "Watch",
   well: "Well",
+  beacon: "Beacon",
 };
 const KEEP_SHOP_BTN =
   "flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle px-2 text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40";
 
-/** X/C cycle: inland battery/well → watch, inland watch → well, covering convert → battery. */
+/** X/C cycle: inland battery → watch → well → beacon → watch. Covering watch/well/beacon → battery. */
 function convertRoleForKey(t: { role: TowerRole; covering: boolean }): TowerRole {
-  if (!t.covering) return t.role === "watch" ? "well" : "watch";
-  if (t.role === "watch" || t.role === "well") return "battery";
-  return "watch";
+  if (t.covering) {
+    if (t.role === "watch" || t.role === "well" || t.role === "beacon") return "battery";
+    return "watch";
+  }
+  switch (t.role) {
+    case "battery":
+      return "watch";
+    case "watch":
+      return "well";
+    case "well":
+      return "beacon";
+    case "beacon":
+      return "watch";
+    default: {
+      const _never: never = t.role;
+      return _never;
+    }
+  }
 }
 
 function useAudio() {
@@ -84,20 +102,24 @@ function useAudio() {
   };
 
   const beep = useCallback(
-    (freq: number, dur = 0.06, type: OscillatorType = "square", gain = 0.04) => {
+    (freq: number, dur = 0.06, type: OscillatorType = "square", gain = 0.04, endFreq?: number) => {
       if (!enabledRef.current) return;
       try {
         const ctx = ensure();
         const o = ctx.createOscillator();
         const g = ctx.createGain();
+        const now = ctx.currentTime;
         o.type = type;
-        o.frequency.value = freq;
+        o.frequency.setValueAtTime(freq, now);
+        if (endFreq != null && endFreq > 0) {
+          o.frequency.exponentialRampToValueAtTime(endFreq, now + dur);
+        }
         g.gain.value = gain;
-        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+        g.gain.exponentialRampToValueAtTime(0.001, now + dur);
         o.connect(g);
         g.connect(ctx.destination);
         o.start();
-        o.stop(ctx.currentTime + dur);
+        o.stop(now + dur);
       } catch {
         /* ignore */
       }
@@ -105,14 +127,55 @@ function useAudio() {
     [],
   );
 
+  const stinger = useCallback(() => {
+    beep(262, 0.12, "triangle", 0.045);
+    setTimeout(() => beep(330, 0.12, "triangle", 0.042), 110);
+    setTimeout(() => beep(415, 0.18, "triangle", 0.04), 220);
+  }, [beep]);
+
   const combat = useCallback((name: string) => {
     if (!enabledRef.current) return;
-    switch (name) {
+    const sep = name.indexOf(":");
+    const base = sep === -1 ? name : name.slice(0, sep);
+    const elem = sep === -1 ? "" : name.slice(sep + 1);
+    switch (base) {
       case "fire":
-        beep(620, 0.035, "square", 0.018);
+        switch (elem) {
+          case "ember":
+            beep(490, 0.05, "sawtooth", 0.022);
+            break;
+          case "frost":
+            beep(560, 0.08, "triangle", 0.02, 240);
+            break;
+          case "volt":
+            beep(980, 0.028, "square", 0.016);
+            break;
+          case "iron":
+            beep(78, 0.09, "sine", 0.05);
+            break;
+          default:
+            beep(620, 0.035, "square", 0.018);
+            break;
+        }
         break;
       case "hit":
-        beep(240, 0.04, "triangle", 0.03);
+        switch (elem) {
+          case "ember":
+            beep(210, 0.055, "sawtooth", 0.032);
+            break;
+          case "frost":
+            beep(380, 0.09, "triangle", 0.028, 150);
+            break;
+          case "volt":
+            beep(760, 0.032, "square", 0.024);
+            break;
+          case "iron":
+            beep(64, 0.11, "sine", 0.052);
+            break;
+          default:
+            beep(240, 0.04, "triangle", 0.03);
+            break;
+        }
         break;
       case "shred":
         beep(180, 0.05, "sawtooth", 0.028);
@@ -133,8 +196,7 @@ function useAudio() {
         break;
       case "clear":
       case "shift":
-        beep(300, 0.1, "triangle", 0.045);
-        setTimeout(() => beep(440, 0.12, "triangle", 0.04), 90);
+        stinger();
         break;
       case "win":
         beep(440, 0.1, "triangle", 0.05);
@@ -146,7 +208,7 @@ function useAudio() {
       default:
         break;
     }
-  }, [beep]);
+  }, [beep, stinger]);
 
   return {
     beep,
@@ -198,6 +260,12 @@ export function TowerDefense() {
   const pushSnap = useCallback(() => {
     setSnap(engine.snapshot());
   }, [engine]);
+
+  const toggleFpv = useCallback(() => {
+    const on = engine.toggleFpv();
+    audio.beep(on ? 480 : 260, 0.07, "triangle", 0.04);
+    pushSnap();
+  }, [engine, audio, pushSnap]);
 
   useEffect(() => {
     setHasSave(loadSavedRun() !== null);
@@ -314,8 +382,7 @@ export function TowerDefense() {
         persistNow();
         pushSnap();
       } else if (e.key === "v" || e.key === "V") {
-        engine.toggleFpv();
-        pushSnap();
+        toggleFpv();
       } else if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") {
         if (engine.fpv) {
           engine.lookFpv(-18, 0);
@@ -357,7 +424,7 @@ export function TowerDefense() {
         if (t) {
           const role = convertRoleForKey(t);
           engine.convertSelected(role);
-          if (role === "well") engine.setFpv(false);
+          if (role === "well" || role === "beacon") engine.setFpv(false);
         }
         persistNow();
         pushSnap();
@@ -373,7 +440,7 @@ export function TowerDefense() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [engine, audio, persistNow, pushSnap]);
+  }, [engine, audio, persistNow, pushSnap, toggleFpv]);
 
   const selected = useMemo(() => {
     if (snap.selectedTowerId == null) return null;
@@ -474,7 +541,7 @@ export function TowerDefense() {
   const convert = (role: TowerRole) => {
     if (engine.convertSelected(role)) {
       audio.beep(600, 0.08, "square", 0.04);
-      if (role === "well") engine.setFpv(false);
+      if (role === "well" || role === "beacon") engine.setFpv(false);
     } else audio.beep(140, 0.06);
     persistNow();
     pushSnap();
@@ -489,6 +556,13 @@ export function TowerDefense() {
 
   const buyKeepDoorGun = () => {
     if (engine.buyKeepDoorGun()) audio.beep(520, 0.08, "square", 0.04);
+    else audio.beep(140, 0.06);
+    persistNow();
+    pushSnap();
+  };
+
+  const upgradeKeepDoorGun = () => {
+    if (engine.upgradeKeepDoorGun()) audio.beep(520, 0.08, "square", 0.04);
     else audio.beep(140, 0.06);
     persistNow();
     pushSnap();
@@ -528,16 +602,14 @@ export function TowerDefense() {
     pushSnap();
   };
 
-  const toggleFpv = () => {
-    const on = engine.toggleFpv();
-    audio.beep(on ? 480 : 260, 0.07, "triangle", 0.04);
-    pushSnap();
-  };
-
   const upCost = selected ? upgradeCost(selected.kind, selected.tier) : null;
   const fortifyCost = keepFortifyCost(snap.keepFortify);
   const keepDoorGun = snap.keepDoorGun;
+  const keepDoorTier = snap.keepDoorTier ?? (keepDoorGun ? 1 : 0);
+  const doorUpgradeCost = keepDoorUpgradeCost(keepDoorTier);
   const keepWell = snap.keepWell;
+  const levelName = snap.levelName ?? levelScript(snap.level).name;
+  const midShiftAfter = snap.midShiftAfter ?? midShiftAfterWave(snap.level);
   const waveDisplay =
     snap.wave >= snap.totalWaves ? snap.totalWaves : snap.wave + 1;
   const gameSpeed: GameSpeed = snap.gameSpeed ?? engine.gameSpeed ?? 1;
@@ -552,7 +624,9 @@ export function TowerDefense() {
             Aether Bastion
           </h1>
           <p className="hidden text-xs text-fg-muted sm:block">
-            10 levels · keep holds · the front moves
+            {snap.phase === "menu"
+              ? "10 levels · keep holds · the front moves"
+              : `L${snap.level} ${levelName}`}
           </p>
         </div>
 
@@ -674,8 +748,10 @@ export function TowerDefense() {
                   Survive <strong className="font-medium text-fg">{TOTAL_LEVELS} levels</strong> of{" "}
                   {WAVES_PER_LEVEL} waves each. The{" "}
                   <strong className="font-medium text-fg">keep stays in a corner</strong>. Towers stay
-                  forever. After wave 4 the road moves — before Hex Tide (wave {MID_SHIFT_WAVE}).
-                  Exploit matchups and stack tiers.
+                  forever. On {levelScript(1).name} the road moves after wave{" "}
+                  {midShiftAfterWave(1)}; later levels shift after wave {midShiftAfterWave(2)}.
+                  Convert inland towers to Watch, Well, or Beacon. Exploit matchups and stack
+                  tiers.
                 </p>
                 <div className="flex flex-col items-center gap-2">
                   <button
@@ -733,8 +809,8 @@ export function TowerDefense() {
                   ))}
                 </div>
                 <p className="mt-4 text-pretty text-[11px] text-fg-subtle">
-                  Keys: 1–4 build · Space wave · U upgrade · X/C convert inland · click keep to upgrade · F
-                  speed · T target · V turret cam · Esc pause
+                  Keys: 1–4 build · Space wave · U upgrade · X/C convert inland (Watch / Well /
+                  Beacon) · click keep to upgrade · F speed · T target · V turret cam · Esc pause
                 </p>
               </div>
             </Overlay>
@@ -859,6 +935,9 @@ export function TowerDefense() {
                 <p className="px-0.5 text-[11px] text-fg-subtle">
                   Level {snap.level}/{snap.totalLevels}
                   {snap.nextWaveName ? ` · Next: ${snap.nextWaveName}` : ""}
+                  {!snap.shiftHold && snap.wave < midShiftAfter
+                    ? ` · road moves after wave ${midShiftAfter}`
+                    : ""}
                 </p>
               )
             )}
@@ -958,9 +1037,27 @@ export function TowerDefense() {
                     >
                       <Crosshair className="size-3.5 shrink-0" />
                       {keepDoorGun
-                        ? "Door gun ready"
+                        ? `Door gun T${keepDoorTier}`
                         : `Door gun ${KEEP_DOOR_GUN_COST}g · shoots the last stretch`}
                     </button>
+                    {keepDoorGun && keepDoorTier < KEEP_DOOR_MAX_TIER ? (
+                      <button
+                        type="button"
+                        aria-label="Upgrade door gun"
+                        disabled={
+                          doorUpgradeCost == null ||
+                          snap.gold < (doorUpgradeCost ?? 0) ||
+                          snap.phase !== "playing"
+                        }
+                        onClick={upgradeKeepDoorGun}
+                        className={KEEP_SHOP_BTN}
+                      >
+                        <ArrowUpCircle className="size-3.5 shrink-0" />
+                        {doorUpgradeCost == null
+                          ? `Door gun T${keepDoorTier}`
+                          : `Door gun T${keepDoorTier} · upgrade ${doorUpgradeCost}g`}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       aria-label="Courtyard well"
@@ -991,7 +1088,7 @@ export function TowerDefense() {
                       </p>
                       <p className="text-xs text-fg-muted">
                         Tier {selected.tier}/{MAX_TIER} · {ROLE_LABEL[selected.role]}
-                        {selected.role !== "well"
+                        {selected.role !== "well" && selected.role !== "beacon"
                           ? ` · ${selected.kills} kills · ${TARGET_MODE_LABEL[selectedTargetMode]}`
                           : ` · ${selected.kills} kills`}
                         {selected.covering === false ? " · off the new path" : ""}
@@ -1015,32 +1112,44 @@ export function TowerDefense() {
                   </div>
                   {selected.covering === false ? (
                     <>
-                      <div className="mt-2 flex gap-2 sm:mt-2.5">
+                      <div className="mt-2 grid grid-cols-3 gap-1.5 sm:mt-2.5">
                         <button
                           type="button"
                           disabled={selected.role === "watch" || snap.phase !== "playing"}
-                          title="Longer range, slower fire"
+                          title="Boss snipe, longer range"
                           onClick={() => convert("watch")}
-                          className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40"
+                          className="flex h-10 items-center justify-center rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40"
                         >
                           Watch
                         </button>
                         <button
                           type="button"
                           disabled={selected.role === "well" || snap.phase !== "playing"}
-                          title={`No shots — ${wellIncome(selected.tier)}g each wave`}
+                          title={`No shots — ${wellIncome(selected.tier, snap.level)}g each wave`}
                           onClick={() => convert("well")}
-                          className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40"
+                          className="flex h-10 items-center justify-center rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40"
                         >
                           Well
                         </button>
+                        <button
+                          type="button"
+                          disabled={selected.role === "beacon" || snap.phase !== "playing"}
+                          title="No shots — pulls the next road toward it"
+                          onClick={() => convert("beacon")}
+                          className="flex h-10 items-center justify-center rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40"
+                        >
+                          Beacon
+                        </button>
                       </div>
                       <p className="mt-1.5 text-[10px] leading-snug text-fg-subtle">
-                        Watch: longer range, slower fire. Well: no shots,{" "}
-                        {wellIncome(selected.tier)}g each wave.
+                        Watch: boss snipe, longer range. Well: no shots,{" "}
+                        {wellIncome(selected.tier, snap.level)}g each wave. Beacon: no shots,
+                        pulls the next road.
                       </p>
                     </>
-                  ) : selected.role === "watch" || selected.role === "well" ? (
+                  ) : selected.role === "watch" ||
+                    selected.role === "well" ||
+                    selected.role === "beacon" ? (
                     <button
                       type="button"
                       disabled={snap.phase !== "playing"}
@@ -1050,37 +1159,18 @@ export function TowerDefense() {
                       Restore battery
                     </button>
                   ) : null}
-                  {selected.role !== "well" ? (
-                    <>
-                      <button
-                        type="button"
-                        aria-label={`Cycle targeting mode, currently ${TARGET_MODE_LABEL[selectedTargetMode]}`}
-                        disabled={snap.phase !== "playing" && snap.phase !== "paused"}
-                        onClick={cycleTargetMode}
-                        className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40 sm:mt-2.5"
-                      >
-                        <Crosshair className="size-3.5 text-fg-muted" />
-                        Target: {TARGET_MODE_LABEL[selectedTargetMode]}
-                        <span className="ml-0.5 text-[10px] text-fg-subtle">(T)</span>
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={snap.fpv}
-                        aria-label={snap.fpv ? "Exit turret cam" : "Turret cam"}
-                        disabled={!selected}
-                        onClick={toggleFpv}
-                        className={[
-                          "mt-1.5 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border text-xs font-medium transition sm:mt-2",
-                          snap.fpv
-                            ? "border-accent bg-accent text-accent-fg"
-                            : "border-border bg-bg-subtle hover:bg-bg-elevated",
-                        ].join(" ")}
-                      >
-                        <Eye className="size-3.5" />
-                        {snap.fpv ? "Exit turret cam" : "Turret cam"}
-                        <span className="ml-0.5 text-[10px] opacity-70">(V)</span>
-                      </button>
-                    </>
+                  {selected.role !== "well" && selected.role !== "beacon" ? (
+                    <button
+                      type="button"
+                      aria-label={`Cycle targeting mode, currently ${TARGET_MODE_LABEL[selectedTargetMode]}`}
+                      disabled={snap.phase !== "playing" && snap.phase !== "paused"}
+                      onClick={cycleTargetMode}
+                      className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40 sm:mt-2.5"
+                    >
+                      <Crosshair className="size-3.5 text-fg-muted" />
+                      Target: {TARGET_MODE_LABEL[selectedTargetMode]}
+                      <span className="ml-0.5 text-[10px] text-fg-subtle">(T)</span>
+                    </button>
                   ) : null}
                   <div className="mt-2 flex gap-2 sm:mt-2.5">
                     <button
@@ -1110,21 +1200,6 @@ export function TowerDefense() {
               )}
             </div>
 
-            <div className="hidden rounded-[var(--radius-md)] border border-border bg-bg p-3 lg:block">
-              <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-fg-subtle">
-                Element matchups
-              </p>
-              <p className="mb-2 text-[10px] leading-snug text-fg-muted">{MATCHUP_MANTRA}</p>
-              <MatchupGrid compact />
-              <div className="mt-2 space-y-1 text-[10px] text-fg-subtle">
-                <p>Colored pip on an enemy = its armor.</p>
-                <p>Gold X on the pip = Shred (weak hits land).</p>
-                <p>
-                  <span className="inline-block size-2 bg-success align-middle" /> strength{" "}
-                  <span className="inline-block size-2 bg-danger align-middle" /> weakness
-                </p>
-              </div>
-            </div>
           </aside>
         )}
       </div>
@@ -1393,11 +1468,11 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               Levels
             </h4>
             <p className="text-xs leading-relaxed">
-              {TOTAL_LEVELS} levels × {WAVES_PER_LEVEL} waves. Clear all waves to unlock the next
-              level. Each new level generates a <strong className="text-fg">fresh random path</strong>
-              . <strong className="text-fg">Towers never move</strong> — the path winds around them
-              and the keep. Spawn can jump edges; the keep stays in its corner. Enemies scale hard
-              — Level 10 is brutal.
+              {TOTAL_LEVELS} authored campaigns × {WAVES_PER_LEVEL} waves. Clear all waves to
+              unlock the next level. Each new level weaves a{" "}
+              <strong className="text-fg">fresh path</strong> around towers that never move.
+              Spawn can jump edges; the keep stays in its corner. Enemies scale hard — Last
+              Stand is brutal.
             </p>
           </section>
 
@@ -1406,11 +1481,12 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               The front shifts
             </h4>
             <p className="text-xs leading-relaxed">
-              Mid-level, after wave 4, the road moves before Hex Tide (wave {MID_SHIFT_WAVE}).
-              Towers stay forever — there is no selling. Convert inland towers to{" "}
-              <strong className="text-fg">Watch</strong> (longer range, slower fire) or{" "}
-              <strong className="text-fg">Well</strong> (gold each wave). When the road comes back,
-              restore a Watch or Well to a battery.
+              On {levelScript(1).name} the road moves after wave {midShiftAfterWave(1)}. Later
+              levels shift after wave {midShiftAfterWave(2)}. Towers stay forever — there is no
+              selling. Convert inland towers to <strong className="text-fg">Watch</strong> (boss
+              snipe, longer range), <strong className="text-fg">Well</strong> (gold that scales
+              with the campaign level), or <strong className="text-fg">Beacon</strong> (pulls the
+              next road toward it). When the road comes back, restore them to a battery.
             </p>
           </section>
 
@@ -1419,8 +1495,9 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               The Keep
             </h4>
             <p className="text-xs leading-relaxed">
-              The Bastion is the corner keep. Click it to upgrade: thicker walls, a door gun, or a
-              courtyard well. The keep stays. The road always ends at its door.
+              The Bastion is the corner keep. Click it to upgrade: thicker walls, a door gun you
+              can keep upgrading, or a courtyard well. The keep stays. The road always ends at
+              its door.
             </p>
           </section>
 
@@ -1443,8 +1520,8 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               </li>
               <li>
                 <strong className="text-fg">X</strong> / <strong className="text-fg">C</strong> —
-                convert the selected inland tower (battery → Watch → Well). Click the keep to
-                upgrade.
+                convert the selected inland tower (battery → Watch → Well → Beacon). Covering
+                Watch, Well, or Beacon restore to Battery. Click the keep to upgrade.
               </li>
               <li>
                 Between waves, a <strong className="text-fg">wave preview</strong> lists enemy
@@ -1496,11 +1573,13 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
 
           <section>
             <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-              Wave templates
+              Campaign
             </h4>
             <p className="text-[11px] text-fg-subtle">
-              Each level reuses {BASE_WAVES.length} wave scripts scaled up:{" "}
-              {BASE_WAVES.map((w) => w.name).join(", ")}.
+              Each level is an authored campaign, not the same 10 wave scripts on a scaler.{" "}
+              {LEVEL_SCRIPTS.map((s) => s.name).join(", ")}. Watch snipes bosses from farther
+              out. Wells pay gold that scales with the campaign level. A Beacon pulls the next
+              road toward it.
             </p>
           </section>
 

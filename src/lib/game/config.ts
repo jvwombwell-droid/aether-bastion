@@ -1,3 +1,4 @@
+import { LEVEL_SCRIPTS, levelScript, midShiftAfterWave } from "./levels";
 import type {
   BuffDef,
   BuffId,
@@ -9,14 +10,16 @@ import type {
   WaveDef,
 } from "./types";
 
+export { LEVEL_SCRIPTS, levelScript, midShiftAfterWave };
+
 export const CELL = 40;
 export const COLS = 22;
 export const ROWS = 14;
 export const MAP_W = COLS * CELL;
 export const MAP_H = ROWS * CELL;
 
-export const START_GOLD = 270;
-export const START_LIVES = 20;
+export const START_GOLD = 300;
+export const START_LIVES = 22;
 export const SELL_REFUND = 0.7;
 export const MAX_TIER = 3;
 
@@ -24,15 +27,18 @@ export const MAX_TIER = 3;
 export const WAVES_PER_LEVEL = 10;
 export const TOTAL_LEVELS = 10;
 
-/** 1-based. After wave 4 clears, the road moves; Hex Tide (wave 5) uses the new path. */
-export const MID_SHIFT_WAVE = 5;
+/** Default mid-shift for L2+ (1-based wave that just cleared). L1 uses 2. */
+export const MID_SHIFT_WAVE = 4;
 
-export const WATCH_RANGE_MUL = 1.5;
-export const WATCH_FIRE_MUL = 0.55;
-export const MAX_KEEP_FORTIFY = 2;
+export const WATCH_RANGE_MUL = 1.7;
+export const WATCH_FIRE_MUL = 0.72;
+export const WATCH_BOSS_DAMAGE_MUL = 1.45;
+export const MAX_KEEP_FORTIFY = 3;
 export const KEEP_FORTIFY_LIVES = 2;
 export const KEEP_DOOR_GUN_COST = 90;
+export const KEEP_DOOR_MAX_TIER = 3;
 export const KEEP_WELL_COST = 75;
+export const BEACON_PULL = 18;
 
 /** Damage multipliers: tower element → enemy armor. */
 export const MATCHUP: Record<Element, Record<Element, number>> = {
@@ -447,7 +453,7 @@ export const BASE_WAVES: WaveDef[] = [
   },
 ];
 
-/** @deprecated use BASE_WAVES + scaleWavesForLevel — kept for UI import name compat */
+/** @deprecated use LEVEL_SCRIPTS — kept for UI import name compat */
 export const WAVES = BASE_WAVES;
 
 export interface LevelScale {
@@ -497,66 +503,14 @@ export function bossLeakCost(level: number): number {
   return Math.min(5, 3 + Math.floor((Math.max(1, level) - 1) / 3));
 }
 
-const STRENGTH_BUFFS: BuffId[] = ["fortify", "haste", "ward", "regen"];
-
-/** Scale base wave templates for a campaign level (1–10). */
+/** Authored waves for a campaign level. Gold scales; counts stay as written. */
 export function scaleWavesForLevel(level: number): WaveDef[] {
   const s = levelScale(level);
-  return BASE_WAVES.map((w, wi) => {
-    const spawns = w.spawns.map((sp) => {
-      const count = Math.max(1, Math.round(sp.count * Math.max(1, s.countMul)));
-      const interval = Math.max(0.18, sp.interval * s.intervalMul);
-      let spawnBuff = sp.spawnBuff;
-      let spawnBuffDuration = sp.spawnBuffDuration;
-      // Higher levels: more forced strength buffs on non-boss packs
-      if (!spawnBuff && sp.kind !== "boss" && s.forceBuffChance > 0) {
-        // Deterministic-ish by wave index
-        const roll = ((wi * 17 + sp.kind.charCodeAt(0) + level * 3) % 100) / 100;
-        if (roll < s.forceBuffChance) {
-          spawnBuff = STRENGTH_BUFFS[(wi + level) % STRENGTH_BUFFS.length]!;
-          spawnBuffDuration = 6 + level;
-        }
-      }
-      // Extra boss on last wave of high levels
-      return {
-        ...sp,
-        count: sp.kind === "boss" && level >= 5 ? count + Math.floor((level - 4) / 2) : count,
-        interval,
-        spawnBuff,
-        spawnBuffDuration,
-      };
-    });
-    // From L2+: inject escalating extra packs (count grows exponentially with level)
-    if (level >= 2 && wi >= 2) {
-      const extraKind: EnemyKind =
-        wi % 3 === 0 ? "brute" : wi % 3 === 1 ? "shield" : "hexer";
-      const extraCount = Math.max(2, Math.round(2 * Math.pow(1.35, level - 1)));
-      spawns.push({
-        kind: extraKind,
-        count: extraCount,
-        interval: Math.max(0.22, 0.85 * s.intervalMul),
-        delay: 4.5,
-        spawnBuff: level >= 5 ? STRENGTH_BUFFS[(wi + level) % STRENGTH_BUFFS.length] : undefined,
-        spawnBuffDuration: level >= 5 ? 5 + level : undefined,
-      });
-    }
-    // High levels: second pressure pack on boss wave
-    if (level >= 6 && wi === BASE_WAVES.length - 1) {
-      spawns.push({
-        kind: "runner",
-        count: Math.round(6 * Math.pow(1.25, level - 6)),
-        interval: Math.max(0.2, 0.4 * s.intervalMul),
-        delay: 10,
-        spawnBuff: "haste",
-        spawnBuffDuration: 6 + level,
-      });
-    }
-    return {
-      name: w.name,
-      bonusGold: Math.round(w.bonusGold * s.bonusGoldMul),
-      spawns,
-    };
-  });
+  return levelScript(level).waves.map((w) => ({
+    name: w.name,
+    bonusGold: Math.round(w.bonusGold * s.bonusGoldMul),
+    spawns: w.spawns.map((sp) => ({ ...sp })),
+  }));
 }
 
 export function levelClearBonus(level: number): number {
@@ -572,25 +526,61 @@ export function midShiftResupply(level: number): number {
   return Math.round(frontShiftResupply(level) * 0.65);
 }
 
-export function wellIncome(tier: number): number {
-  return 10 + Math.max(1, tier) * 8;
+/** Well payout scales with tower tier and campaign level. */
+export function wellIncome(tier: number, level = 1): number {
+  const base = 14 + Math.max(1, tier) * 10;
+  const levelMul = 1 + Math.max(0, level - 1) * 0.22;
+  return Math.round(base * levelMul);
 }
 
 export function keepFortifyCost(current: number): number | null {
   if (current >= MAX_KEEP_FORTIFY) return null;
-  return 80 + current * 70;
+  return 80 + current * 80;
 }
 
 export function keepDoorGunCost(): number {
   return KEEP_DOOR_GUN_COST;
 }
 
+export function keepDoorUpgradeCost(currentTier: number): number | null {
+  if (currentTier < 1) return KEEP_DOOR_GUN_COST;
+  if (currentTier >= KEEP_DOOR_MAX_TIER) return null;
+  return currentTier === 1 ? 140 : 220;
+}
+
+export interface KeepDoorStats {
+  damage: number;
+  range: number;
+  fireRate: number;
+  splash: number;
+  applyBuffChance: number;
+  applyBuffDuration: number;
+}
+
+/** Door gun uses Iron tiers, then grows with fortify and campaign level. */
+export function keepDoorStats(tier: number, fortify: number, level: number): KeepDoorStats {
+  const t = Math.max(1, Math.min(KEEP_DOOR_MAX_TIER, tier));
+  const iron = TOWERS.iron.tiers[t - 1]!;
+  const fortMul = 1 + Math.max(0, fortify) * 0.2;
+  const levelMul = 1 + Math.max(0, level - 1) * 0.18;
+  return {
+    damage: Math.round(iron.damage * fortMul * levelMul),
+    range: Math.round(iron.range * (1 + (t - 1) * 0.08)),
+    fireRate: iron.fireRate * (1 + (t - 1) * 0.08),
+    splash: iron.splash,
+    applyBuffChance: iron.applyBuffChance ?? 0.45,
+    applyBuffDuration: iron.applyBuffDuration ?? 4,
+  };
+}
+
 export function towerRangeFor(kind: Element, tier: number, role: TowerRole): number {
+  if (role === "well" || role === "beacon") return 0;
   const r = TOWERS[kind].tiers[Math.max(0, tier - 1)]!.range;
   return role === "watch" ? Math.round(r * WATCH_RANGE_MUL) : r;
 }
 
 export function towerFireRateFor(kind: Element, tier: number, role: TowerRole): number {
+  if (role === "well" || role === "beacon") return 0;
   const f = TOWERS[kind].tiers[Math.max(0, tier - 1)]!.fireRate;
   return role === "watch" ? f * WATCH_FIRE_MUL : f;
 }
