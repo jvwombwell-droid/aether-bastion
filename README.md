@@ -9,10 +9,11 @@ Elemental tower defense game — hold the path across **10 levels** of **10 wave
 - **Iron Bastion shreds armor** so weak matchups stop bouncing
 - **Enemy armor + strength/weakness buffs** (Fortify, Haste, Ward, Frail, Exposed, Regen, Shred)
 - **Towers stay forever** — there is no sell
-- **The road moves after wave 4** of each level (before Hex Tide / wave 5). Covering vs inland is called out
-- **Inland towers convert** to **Watch** (longer range, slower fire) or **Well** (gold each wave). Restore Battery if the road comes back
+- **The road moves after wave 2** on level 1, and after wave 4 on later levels. Covering vs inland is called out
+- **Inland towers convert** to **Watch** (boss snipe, longer range), **Well** (gold that scales with the campaign level), or **Beacon** (pulls the next road). Restore Battery if the road comes back
+- **Door gun** can be bought on the keep, then upgraded after purchase
 - Between levels, the path re-routes around permanent towers and the keep
-- Escalating difficulty across 10 levels · 1.6× upgrade costs
+- Ten authored campaigns (not the same 10 wave scripts on a scaler) · 1.6× upgrade costs
 
 ## Play
 
@@ -40,7 +41,7 @@ React 19 · TypeScript · Vite · TanStack Start · Tailwind CSS
 | Click keep | Fortify (+lives) |
 | Space | Start wave / continue level |
 | U | Upgrade selected |
-| X / C | Convert inland tower to Watch / Well |
+| X / C | Convert inland tower (Watch / Well / Beacon) |
 | F | Cycle game speed (1× / 2× / 3×) |
 | V | Turret cam (FPV) from the selected tower |
 | Esc | Pause |
