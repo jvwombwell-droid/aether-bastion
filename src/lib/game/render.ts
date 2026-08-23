@@ -10,6 +10,7 @@ import {
   towerRangeFor,
 } from "./config";
 import { damageMultiplier } from "./combat";
+import { reconBoardLine } from "./levels";
 import type { KeepFootprint } from "./mapgen";
 import { enemySprite, getSprite, towerSprite } from "./sprites";
 import type {
@@ -50,6 +51,7 @@ export type RenderHost = {
   keepDoorTier: number;
   keepFortify: number;
   level: number;
+  wave: number;
   cells: Cell[][];
   tilePatternCache: Map<string, CanvasPattern>;
   coveringCount: number;
@@ -105,6 +107,7 @@ export function renderGame(
   drawPath(engine, ctx);
   drawDuskWash(ctx);
   drawAetherVein(engine, ctx);
+  drawBeaconPull(engine, ctx);
   drawEndpointPads(engine, ctx);
 
   if (engine.placement && engine.hoverCol >= 0) {
@@ -127,6 +130,7 @@ export function renderGame(
   }
 
   if (engine.frontShift > 0 || engine.shiftHold) drawFrontShift(engine, ctx);
+  drawReconLine(engine, ctx);
 
   ctx.restore();
 }
@@ -253,6 +257,93 @@ function drawPath(engine: RenderHost, ctx: CanvasRenderingContext2D) {
     strokeLane(ctx, engine.pathPoints, "#6b5340", CELL * 0.86);
   }
   strokeLane(ctx, engine.pathPoints, "rgba(92, 70, 48, 0.28)", CELL * 0.52);
+  ctx.restore();
+}
+
+/** T1 battery bubble on the dirt so beacon pull is visible, not just a tower halo. */
+function drawBeaconPull(engine: RenderHost, ctx: CanvasRenderingContext2D) {
+  const beacons = engine.towers.filter((t) => t.role === "beacon");
+  if (beacons.length === 0) return;
+
+  const range = towerRangeFor("ember", 1, "battery");
+  const scarRange2 = (range * 0.95) * (range * 0.95);
+  const shifting = engine.frontShift > 0 || engine.shiftHold;
+  const pulse = 0.5 + 0.5 * Math.sin(engine.animTime * 2.4);
+  const discAlpha = shifting ? 0.36 + pulse * 0.14 : 0.22 + pulse * 0.08;
+  const nearBeacon = (p: Vec2) =>
+    beacons.some((b) => {
+      const dx = p.x - b.x;
+      const dy = p.y - b.y;
+      return dx * dx + dy * dy <= scarRange2;
+    });
+
+  ctx.save();
+  for (const b of beacons) {
+    const glow = ctx.createRadialGradient(b.x, b.y, 6, b.x, b.y, range);
+    glow.addColorStop(0, `rgba(196, 181, 253, ${discAlpha})`);
+    glow.addColorStop(0.42, `rgba(167, 139, 250, ${discAlpha * 0.48})`);
+    glow.addColorStop(1, "rgba(124, 58, 237, 0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, range, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (engine.pathPoints.length > 0) {
+    const scarAlpha = shifting ? 0.42 + pulse * 0.12 : 0.28 + pulse * 0.1;
+    ctx.fillStyle = `rgba(167, 139, 250, ${scarAlpha})`;
+    ctx.strokeStyle = `rgba(196, 181, 253, ${Math.min(0.85, scarAlpha + 0.12)})`;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 18;
+
+    ctx.beginPath();
+    let drawing = false;
+    for (const p of engine.pathPoints) {
+      if (nearBeacon(p)) {
+        if (!drawing) {
+          ctx.moveTo(p.x, p.y);
+          drawing = true;
+        } else {
+          ctx.lineTo(p.x, p.y);
+        }
+      } else {
+        drawing = false;
+      }
+    }
+    ctx.stroke();
+
+    for (const p of engine.pathPoints) {
+      if (!nearBeacon(p)) continue;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.strokeStyle = shifting
+      ? `rgba(196, 181, 253, ${0.42 + pulse * 0.12})`
+      : `rgba(196, 181, 253, ${0.28 + pulse * 0.1})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([3, 6]);
+    for (const b of beacons) {
+      let nearest = engine.pathPoints[0]!;
+      let best = Infinity;
+      for (const p of engine.pathPoints) {
+        const dx = p.x - b.x;
+        const dy = p.y - b.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < best) {
+          best = d2;
+          nearest = p;
+        }
+      }
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(nearest.x, nearest.y);
+      ctx.stroke();
+    }
+  }
+
   ctx.restore();
 }
 
@@ -854,6 +945,26 @@ function drawFrontShift(engine: RenderHost, ctx: CanvasRenderingContext2D) {
     mid,
     44,
   );
+  ctx.restore();
+}
+
+function drawReconLine(engine: RenderHost, ctx: CanvasRenderingContext2D) {
+  if (engine.phase !== "playing" && engine.phase !== "paused") return;
+  if (engine.wave !== 0 || engine.shiftHold || engine.frontShift > 0) return;
+  const line = reconBoardLine(engine.level);
+  if (line === null) return;
+
+  const mid = (COLS * CELL) / 2;
+  ctx.save();
+  ctx.fillStyle = "rgba(8,8,12,0.52)";
+  ctx.fillRect(mid - 200, 14, 400, 26);
+  ctx.strokeStyle = "rgba(196,181,253,0.26)";
+  ctx.strokeRect(mid - 200, 14, 400, 26);
+  ctx.fillStyle = "#d4cce4";
+  ctx.font = "600 12px Segoe UI, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(line, mid, 27);
   ctx.restore();
 }
 

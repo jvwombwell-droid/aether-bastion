@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { LEVEL_SCRIPTS, TOWERS, keepDoorStats, levelScript, midShiftAfterWave, scaleWavesForLevel, wellIncome } from "./config";
+import {
+  LEVEL_SCRIPTS,
+  TOWERS,
+  keepDoorStats,
+  levelRule,
+  levelScript,
+  midShiftAfterWave,
+  reconBoardLine,
+  scaleWavesForLevel,
+  wellIncome,
+} from "./config";
 
 describe("LEVEL_SCRIPTS", () => {
   it("authors ten campaign scripts", () => {
@@ -7,7 +17,38 @@ describe("LEVEL_SCRIPTS", () => {
     for (const script of LEVEL_SCRIPTS) {
       expect(script.waves).toHaveLength(10);
       expect(script.name.length).toBeGreaterThan(0);
+      expect(script.rule).toBeDefined();
     }
+  });
+
+  it("assigns exam rules to L2–L4 and standard elsewhere", () => {
+    expect(levelScript(1).rule).toBe("standard");
+    expect(levelScript(2).rule).toBe("thickHide");
+    expect(levelScript(3).rule).toBe("slipstream");
+    expect(levelScript(4).rule).toBe("wardedNight");
+    expect(levelRule(2)).toBe("thickHide");
+    expect(levelRule(3)).toBe("slipstream");
+    expect(levelRule(4)).toBe("wardedNight");
+    for (let level = 5; level <= 10; level++) {
+      expect(levelScript(level).rule, `L${level}`).toBe("standard");
+      expect(levelRule(level), `L${level}`).toBe("standard");
+    }
+  });
+
+  it("names L2–L4 signature waves for each exam", () => {
+    const l2 = levelScript(2);
+    expect(l2.waves[0]?.name).toBe("Iron Recon");
+    expect(l2.waves[1]?.name).toBe("Hide Line");
+    expect(levelScript(3).waves[0]?.name).toBe("First Drill");
+    expect(levelScript(4).waves[0]?.name).toBe("Ward Recon");
+  });
+
+  it("shows a recon board line only on L1–L4", () => {
+    expect(reconBoardLine(1)).toBe("The pip is armor. Match it, or bounce.");
+    expect(reconBoardLine(2)).toBe("Hides bounce until Iron shreds them.");
+    expect(reconBoardLine(3)).toBe("Runners sprint unless a gun is on First.");
+    expect(reconBoardLine(4)).toBe("Ward holds until Exposed.");
+    expect(reconBoardLine(5)).toBeNull();
   });
 
   it("names level 1 First Watch and shifts after wave 2", () => {

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { MATCHUP } from "./config";
-import { damageMultiplier } from "./combat";
+import {
+  combatRulesFor,
+  damageMultiplier,
+  DEFAULT_COMBAT_RULES,
+  THICK_HIDE_CAP,
+} from "./combat";
 import type { ActiveBuff, Enemy } from "./types";
 
 function enemy(partial: Partial<Enemy> & Pick<Enemy, "armor" | "buffs">): Enemy {
@@ -63,5 +68,75 @@ describe("damageMultiplier", () => {
     );
     expect(damageMultiplier("ember", exposed)).toBeGreaterThan(damageMultiplier("ember", plain));
     expect(damageMultiplier("frost", exposed)).toBe(damageMultiplier("frost", plain));
+  });
+
+  it("thickHide caps Volt vs iron hide without shred at THICK_HIDE_CAP", () => {
+    const e = enemy({ armor: "iron", buffs: [] });
+    expect(damageMultiplier("volt", e, { thickHide: true, wardedNight: false })).toBe(
+      THICK_HIDE_CAP,
+    );
+    expect(THICK_HIDE_CAP).toBe(0.42);
+    expect(MATCHUP.volt.iron).toBe(1.55);
+  });
+
+  it("thickHide caps Ember vs iron hide without shred at THICK_HIDE_CAP", () => {
+    const e = enemy({ armor: "iron", buffs: [] });
+    expect(damageMultiplier("ember", e, { thickHide: true, wardedNight: false })).toBe(
+      THICK_HIDE_CAP,
+    );
+  });
+
+  it("thickHide does not cap Volt vs iron after shred", () => {
+    const e = enemy({ armor: "iron", buffs: [buff("shred")] });
+    expect(
+      damageMultiplier("volt", e, { thickHide: true, wardedNight: false }),
+    ).toBeCloseTo(MATCHUP.volt.iron * 1.15, 8);
+  });
+
+  it("thickHide off leaves Volt vs iron at 1.55", () => {
+    const e = enemy({ armor: "iron", buffs: [] });
+    expect(damageMultiplier("volt", e)).toBe(1.55);
+    expect(damageMultiplier("volt", e, DEFAULT_COMBAT_RULES)).toBe(1.55);
+  });
+
+  it("wardedNight applies ward resist to super-effective hits without expose", () => {
+    const e = enemy({ armor: "ember", buffs: [buff("ward")] });
+    expect(
+      damageMultiplier("volt", e, { thickHide: false, wardedNight: true }),
+    ).toBeCloseTo(MATCHUP.volt.ember * 0.55, 8);
+  });
+
+  it("wardedNight skips ward on exposed super-effective hits", () => {
+    const e = enemy({ armor: "ember", buffs: [buff("ward"), buff("expose")] });
+    expect(
+      damageMultiplier("volt", e, { thickHide: false, wardedNight: true }),
+    ).toBeCloseTo(MATCHUP.volt.ember * 1.35, 8);
+  });
+
+  it("default rules still skip ward on super-effective Volt vs ember", () => {
+    const e = enemy({ armor: "ember", buffs: [buff("ward")] });
+    expect(damageMultiplier("volt", e)).toBe(MATCHUP.volt.ember);
+    expect(damageMultiplier("volt", e)).toBe(1.85);
+  });
+});
+
+describe("combatRulesFor", () => {
+  it("maps thickHide / slipstream / wardedNight / standard", () => {
+    expect(combatRulesFor("thickHide")).toEqual({
+      thickHide: true,
+      wardedNight: false,
+    });
+    expect(combatRulesFor("slipstream")).toEqual({
+      thickHide: false,
+      wardedNight: false,
+    });
+    expect(combatRulesFor("wardedNight")).toEqual({
+      thickHide: false,
+      wardedNight: true,
+    });
+    expect(combatRulesFor("standard")).toEqual({
+      thickHide: false,
+      wardedNight: false,
+    });
   });
 });
