@@ -20,7 +20,9 @@ import {
   upgradeCost,
   MATCHUP_HINT,
   MID_SHIFT_WAVE,
+  KEEP_DOOR_GUN_COST,
   KEEP_FORTIFY_LIVES,
+  KEEP_WELL_COST,
   keepFortifyCost,
   midShiftResupply,
   towerFireRateFor,
@@ -177,6 +179,8 @@ export class GameEngine {
   messageTimer = 0;
   gameSpeed: GameSpeed = 1;
   frontShift = 0;
+  /** Stays true until the next wave starts so the hold is a real turn. */
+  shiftHold = false;
   coveringCount = 0;
   strandedCount = 0;
   fpv = false;
@@ -189,6 +193,9 @@ export class GameEngine {
   keepOrigin: [number, number] = [0, 0];
   midShiftDone = false;
   keepFortify = 0;
+  keepDoorGun = false;
+  keepWell = false;
+  keepDoorCooldown = 0;
   selectedKeep = false;
 
   pathCells: Array<[number, number]> = [];
@@ -299,6 +306,9 @@ export class GameEngine {
     this.keepOrigin = pickKeepOrigin(this.runSeed);
     this.midShiftDone = false;
     this.keepFortify = 0;
+    this.keepDoorGun = false;
+    this.keepWell = false;
+    this.keepDoorCooldown = 0;
     this.selectedKeep = false;
     this.level = 1;
     this.loadMapForLevel(1);
@@ -324,6 +334,7 @@ export class GameEngine {
     this.levelClearTimer = 0;
     this.gameSpeed = 1;
     this.frontShift = 0;
+    this.shiftHold = false;
     this.coveringCount = 0;
     this.strandedCount = 0;
     this.prevPathPoints = [];
@@ -350,7 +361,7 @@ export class GameEngine {
       role: t.role,
     }));
     return {
-      version: 2,
+      version: 3,
       nextId,
       runSeed: this.runSeed,
       level: this.level,
@@ -366,6 +377,8 @@ export class GameEngine {
       keepRow: this.keepOrigin[1],
       midShiftDone: this.midShiftDone,
       keepFortify: this.keepFortify,
+      keepDoorGun: this.keepDoorGun,
+      keepWell: this.keepWell,
     };
   }
 
@@ -399,7 +412,11 @@ export class GameEngine {
     this.keepOrigin = [saved.keepCol, saved.keepRow];
     this.midShiftDone = saved.midShiftDone;
     this.keepFortify = Math.max(0, Math.floor(saved.keepFortify));
+    this.keepDoorGun = saved.keepDoorGun === true;
+    this.keepWell = saved.keepWell === true;
+    this.keepDoorCooldown = 0;
     this.selectedKeep = false;
+    this.shiftHold = false;
     this.level = saved.level;
     this.wave = saved.wave;
     this.phase = saved.phase;
@@ -495,6 +512,19 @@ export class GameEngine {
     this.frontShift = 4.2;
   }
 
+  private openShiftHold(goldNote: string) {
+    this.shiftHold = true;
+    this.selectedKeep = true;
+    this.selectedTowerId = null;
+    this.placement = null;
+    this.fpv = false;
+    this.setMessage(
+      `The front shifts — convert inland towers or grow the keep, then start the next wave. ${this.coveringCount} covering · ${this.strandedCount} inland · ${goldNote}`,
+      99,
+    );
+    this.playSfx("shift");
+  }
+
   private shiftFrontMidLevel() {
     const seed0 = (levelMapSeed(this.level, this.runSeed) ^ 0x51e9e55) >>> 0;
     const seed = pickFrontShiftSeed(seed0, this.keepSpec(), this.towers);
@@ -502,12 +532,7 @@ export class GameEngine {
     this.midShiftDone = true;
     const resupply = midShiftResupply(this.level);
     this.gold += resupply;
-    const nextName = this.levelWaves[this.wave]?.name ?? "the next wave";
-    this.setMessage(
-      `The front shifts — ${nextName} takes the new road. ${this.coveringCount} covering · ${this.strandedCount} inland · +${resupply}g`,
-      6,
-    );
-    this.playSfx("shift");
+    this.openShiftHold(`+${resupply}g`);
   }
 
   /** Advance to next level: path re-rolls around permanent towers; keep stays. */
@@ -531,12 +556,7 @@ export class GameEngine {
     );
     this.phase = "playing";
     this.levelClearTimer = 0;
-
-    this.setMessage(
-      `Keep holds — front shifts. ${this.coveringCount} covering · ${stranded} inland · +${bonus + resupply}g`,
-      6,
-    );
-    this.playSfx("shift");
+    this.openShiftHold(`+${bonus + resupply}g`);
   }
 
   consumeSfx(): string[] {
@@ -639,6 +659,8 @@ export class GameEngine {
       selectedTowerId: this.selectedTowerId,
       selectedKeep: this.selectedKeep,
       keepFortify: this.keepFortify,
+      keepDoorGun: this.keepDoorGun,
+      keepWell: this.keepWell,
       placement: this.placement,
       score: this.score,
       message: this.message,
@@ -646,6 +668,7 @@ export class GameEngine {
       nextWavePreview: this.getNextWavePreview(),
       gameSpeed: this.gameSpeed,
       frontShift: this.frontShift,
+      shiftHold: this.shiftHold,
       coveringCount: this.coveringCount,
       strandedCount: this.strandedCount,
       fpv: this.fpv,
@@ -845,8 +868,45 @@ export class GameEngine {
     this.gold -= cost;
     this.keepFortify += 1;
     this.lives += KEEP_FORTIFY_LIVES;
-    this.setMessage(`Keep fortified — +${KEEP_FORTIFY_LIVES} lives`);
+    this.setMessage(`Thicker walls — +${KEEP_FORTIFY_LIVES} lives`);
     this.playSfx("place");
+    return true;
+  }
+
+  buyKeepDoorGun(): boolean {
+    if (this.phase !== "playing" || this.keepDoorGun) return false;
+    if (this.gold < KEEP_DOOR_GUN_COST) {
+      this.setMessage("Not enough gold.");
+      return false;
+    }
+    this.gold -= KEEP_DOOR_GUN_COST;
+    this.keepDoorGun = true;
+    this.keepDoorCooldown = 0;
+    this.setMessage("Door gun — the keep fires the last stretch.");
+    this.playSfx("place");
+    return true;
+  }
+
+  buyKeepWell(): boolean {
+    if (this.phase !== "playing" || this.keepWell) return false;
+    if (this.gold < KEEP_WELL_COST) {
+      this.setMessage("Not enough gold.");
+      return false;
+    }
+    this.gold -= KEEP_WELL_COST;
+    this.keepWell = true;
+    this.setMessage("Courtyard well — gold each wave.");
+    this.playSfx("place");
+    return true;
+  }
+
+  /** Test seam: fire the door gun once if an enemy is in range. */
+  fireKeepDoorForTest(): boolean {
+    if (!this.keepDoorGun) return false;
+    const target = this.findKeepDoorTarget();
+    if (!target) return false;
+    this.fireKeepDoor(target);
+    this.keepDoorCooldown = 1 / TOWERS.iron.tiers[0]!.fireRate;
     return true;
   }
 
@@ -883,6 +943,7 @@ export class GameEngine {
       }
     }
     this.spawnQueue.sort((a, b) => a.at - b.at);
+    this.shiftHold = false;
     this.setMessage(`L${this.level} · Wave ${this.wave + 1}: ${waveDef.name}`);
   }
 
@@ -1281,14 +1342,75 @@ export class GameEngine {
     }
   }
 
+  private keepDoorPos(): Vec2 {
+    const door = this.keepSpec().door;
+    return cellCenter(door[0], door[1]);
+  }
+
+  private findKeepDoorTarget(): Enemy | null {
+    const door = this.keepDoorPos();
+    const range = TOWERS.iron.tiers[0]!.range;
+    const range2 = range * range;
+    let best: Enemy | null = null;
+    let bestProgress = -1;
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      if (dist2(door.x, door.y, e.x, e.y) > range2) continue;
+      const prog = this.enemyPathProgress(e);
+      if (prog > bestProgress) {
+        bestProgress = prog;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  private fireKeepDoor(target: Enemy) {
+    const door = this.keepDoorPos();
+    const tier = TOWERS.iron.tiers[0]!;
+    const dx = target.x - door.x;
+    const dy = target.y - door.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const speed = tier.projectileSpeed;
+    this.projectiles.push({
+      id: id(),
+      x: door.x,
+      y: door.y,
+      vx: (dx / len) * speed,
+      vy: (dy / len) * speed,
+      damage: tier.damage,
+      element: "iron",
+      speed,
+      targetId: target.id,
+      splash: tier.splash,
+      slow: tier.slow,
+      chain: tier.chain,
+      chained: 0,
+      ttl: 2.5,
+      radius: 5,
+      alive: true,
+      color: TOWERS.iron.color,
+      trailT: 0.03,
+      applyBuff: tier.applyBuff,
+      applyBuffChance: tier.applyBuffChance,
+      applyBuffDuration: tier.applyBuffDuration,
+    });
+    this.muzzleFlashAt(door.x, door.y, "iron", dx / len, dy / len);
+    this.playSfx("fire");
+  }
+
   private muzzleFlash(tower: Tower, ux: number, uy: number) {
+    this.muzzleFlashAt(tower.x, tower.y, tower.kind, ux, uy);
+  }
+
+  private muzzleFlashAt(ox: number, oy: number, element: Element, ux: number, uy: number) {
     this.capParticles();
-    const x = tower.x + ux * 10;
-    const y = tower.y + uy * 10 - 8;
-    const color = TOWERS[tower.kind].color;
-    const kind = this.fxKind(tower.kind);
+    const x = ox + ux * 10;
+    const y = oy + uy * 10 - 8;
+    const color = TOWERS[element].color;
+    const kind = this.fxKind(element);
     const n = 3 + Math.floor(Math.random() * 3);
-    const iron = tower.kind === "iron";
+    const iron = element === "iron";
     for (let i = 0; i < n; i++) {
       const life = 0.12 + Math.random() * 0.1;
       this.particles.push({
@@ -1474,6 +1596,17 @@ export class GameEngine {
       t.cooldown = 1 / towerFireRateFor(t.kind, t.tier, t.role);
     }
 
+    if (this.keepDoorGun) {
+      this.keepDoorCooldown -= cap;
+      if (this.keepDoorCooldown <= 0) {
+        const doorTarget = this.findKeepDoorTarget();
+        if (doorTarget) {
+          this.fireKeepDoor(doorTarget);
+          this.keepDoorCooldown = 1 / TOWERS.iron.tiers[0]!.fireRate;
+        }
+      }
+    }
+
     for (const p of this.projectiles) {
       if (!p.alive) continue;
       p.ttl -= cap;
@@ -1533,7 +1666,8 @@ export class GameEngine {
       for (const t of this.towers) {
         if (t.role === "well") wellGold += wellIncome(t.tier);
       }
-      this.gold += wellGold;
+      const keepWellGold = this.keepWell ? wellIncome(1) : 0;
+      this.gold += wellGold + keepWellGold;
       this.score += 100 + this.wave * 50 + this.level * 30;
       this.wave += 1;
       this.enemies = [];
@@ -1550,7 +1684,7 @@ export class GameEngine {
       } else if (!this.midShiftDone && this.wave === MID_SHIFT_WAVE - 1) {
         this.shiftFrontMidLevel();
       } else {
-        const extra = wellGold > 0 ? ` · wells +${wellGold}g` : "";
+        const extra = `${wellGold > 0 ? ` · wells +${wellGold}g` : ""}${keepWellGold > 0 ? ` · keep well +${keepWellGold}g` : ""}`;
         this.setMessage(`Wave clear! +${waveDef.bonusGold}g${extra} — prep next.`);
         this.playSfx("wave");
       }
@@ -1622,12 +1756,10 @@ export class GameEngine {
     if (this.pathPoints.length > 0) {
       this.drawSpawn(ctx, this.pathPoints[0]!);
       this.drawKeep(ctx);
-      if (this.pathPoints.length > 0) {
-        this.drawKeepDoor(ctx, this.pathPoints[this.pathPoints.length - 1]!);
-      }
+      this.drawKeepDoor(ctx, this.keepDoorPos());
     }
 
-    if (this.frontShift > 0) this.drawFrontShift(ctx);
+    if (this.frontShift > 0 || this.shiftHold) this.drawFrontShift(ctx);
 
     ctx.restore();
   }
@@ -1929,8 +2061,29 @@ export class GameEngine {
       ctx.textBaseline = "middle";
       ctx.fillText(String(this.lives), 0, 42);
     }
+    if (this.keepWell) {
+      ctx.fillStyle = "rgba(212,176,80,0.95)";
+      ctx.font = "700 8px Segoe UI, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("WELL", 0, 56);
+    }
 
     ctx.restore();
+
+    if (this.selectedKeep && this.keepDoorGun) {
+      const door = this.keepDoorPos();
+      const range = TOWERS.iron.tiers[0]!.range;
+      ctx.save();
+      ctx.strokeStyle = TOWERS.iron.color + "55";
+      ctx.fillStyle = TOWERS.iron.color + "12";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(door.x, door.y, range, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   private drawKeepDoor(ctx: CanvasRenderingContext2D, pos: Vec2) {
@@ -1944,6 +2097,27 @@ export class GameEngine {
     ctx.beginPath();
     ctx.arc(0, 0, 16, 0, Math.PI * 2);
     ctx.fill();
+    if (this.keepDoorGun) {
+      let ang = -Math.PI / 2;
+      if (this.pathPoints.length >= 2) {
+        const a = this.pathPoints[this.pathPoints.length - 2]!;
+        const b = this.pathPoints[this.pathPoints.length - 1]!;
+        ang = Math.atan2(a.y - b.y, a.x - b.x);
+      }
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.fillStyle = TOWERS.iron.color;
+      ctx.beginPath();
+      ctx.moveTo(-8, 8);
+      ctx.lineTo(0, -12);
+      ctx.lineTo(8, 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillRect(-3.2, -22, 6.4, 16);
+      ctx.fillStyle = "#2a2e34";
+      ctx.fillRect(-1.6, -20, 3.2, 10);
+      ctx.restore();
+    }
     ctx.restore();
   }
 
@@ -2044,8 +2218,11 @@ export class GameEngine {
     ctx.ellipse(0, 16, 12, 5, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    if (this.frontShift > 0 || !t.covering) {
-      const pulse = this.frontShift > 0 ? 0.45 + 0.55 * Math.sin(this.animTime * 6) : 0.55;
+    if (this.frontShift > 0 || this.shiftHold || !t.covering) {
+      const pulse =
+        this.frontShift > 0 || this.shiftHold
+          ? 0.45 + 0.55 * Math.sin(this.animTime * 6)
+          : 0.55;
       ctx.strokeStyle = t.covering
         ? `rgba(90, 158, 111, ${0.35 + pulse * 0.5})`
         : `rgba(212, 160, 64, ${0.4 + pulse * 0.45})`;
@@ -2272,14 +2449,16 @@ export class GameEngine {
   }
 
   private drawFrontShift(ctx: CanvasRenderingContext2D) {
-    const fade = Math.min(1, this.frontShift / 0.6, (4.2 - this.frontShift) / 0.45);
+    const fade = this.shiftHold
+      ? 1
+      : Math.min(1, this.frontShift / 0.6, (4.2 - this.frontShift) / 0.45);
     const mid = (COLS * CELL) / 2;
     ctx.save();
     ctx.globalAlpha = fade;
     ctx.fillStyle = "rgba(8,8,12,0.62)";
-    ctx.fillRect(mid - 210, 10, 420, 50);
+    ctx.fillRect(mid - 250, 10, 500, 50);
     ctx.strokeStyle = "rgba(212,196,160,0.4)";
-    ctx.strokeRect(mid - 210, 10, 420, 50);
+    ctx.strokeRect(mid - 250, 10, 500, 50);
     ctx.fillStyle = "#e8e0d0";
     ctx.font = "700 14px Segoe UI, sans-serif";
     ctx.textAlign = "center";
@@ -2288,7 +2467,9 @@ export class GameEngine {
     ctx.font = "500 11px Segoe UI, sans-serif";
     ctx.fillStyle = "#a8a29a";
     ctx.fillText(
-      `${this.coveringCount} still cover the road · ${this.strandedCount} now inland`,
+      this.shiftHold
+        ? `${this.coveringCount} covering · ${this.strandedCount} inland — convert or grow the keep, then start`
+        : `${this.coveringCount} still cover the road · ${this.strandedCount} now inland`,
       mid,
       44,
     );

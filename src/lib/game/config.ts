@@ -31,6 +31,8 @@ export const WATCH_RANGE_MUL = 1.5;
 export const WATCH_FIRE_MUL = 0.55;
 export const MAX_KEEP_FORTIFY = 2;
 export const KEEP_FORTIFY_LIVES = 2;
+export const KEEP_DOOR_GUN_COST = 90;
+export const KEEP_WELL_COST = 75;
 
 /** Damage multipliers: tower element → enemy armor. */
 export const MATCHUP: Record<Element, Record<Element, number>> = {
@@ -577,6 +579,10 @@ export function wellIncome(tier: number): number {
 export function keepFortifyCost(current: number): number | null {
   if (current >= MAX_KEEP_FORTIFY) return null;
   return 80 + current * 70;
+}
+
+export function keepDoorGunCost(): number {
+  return KEEP_DOOR_GUN_COST;
 }
 
 export function towerRangeFor(kind: Element, tier: number, role: TowerRole): number {

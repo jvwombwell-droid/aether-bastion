@@ -254,6 +254,22 @@ describe("living keep", () => {
     }
   });
 
+  it("holds the front-shift turn until the next wave starts", () => {
+    const e = new GameEngine();
+    e.resetWithSeed(42);
+    placeCoveringAlongPath(e, 4);
+    fireMidShift(e);
+    expect(e.shiftHold).toBe(true);
+    expect(e.selectedKeep).toBe(true);
+    expect(e.snapshot().shiftHold).toBe(true);
+    e.update(5);
+    expect(e.shiftHold).toBe(true);
+    expect(e.message ?? "").toMatch(/convert inland/i);
+    e.startWave();
+    expect(e.shiftHold).toBe(false);
+    expect(e.waveActive).toBe(true);
+  });
+
   it("converts an inland tower to a well and will not sell it", () => {
     const e = new GameEngine();
     e.reset();
@@ -309,7 +325,7 @@ describe("living keep", () => {
     const saved = a.exportRun();
     expect(saved).not.toBeNull();
     if (!saved) return;
-    expect(saved.version).toBe(2);
+    expect(saved.version).toBe(3);
     expect(saved.towers[0]?.role).toBe("watch");
 
     const b = new GameEngine();
