@@ -269,7 +269,7 @@ function drawBeaconPull(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   const scarRange2 = (range * 0.95) * (range * 0.95);
   const shifting = engine.frontShift > 0 || engine.shiftHold;
   const pulse = 0.5 + 0.5 * Math.sin(engine.animTime * 2.4);
-  const discAlpha = shifting ? 0.24 + pulse * 0.12 : 0.11 + pulse * 0.05;
+  const discAlpha = shifting ? 0.36 + pulse * 0.14 : 0.22 + pulse * 0.08;
   const nearBeacon = (p: Vec2) =>
     beacons.some((b) => {
       const dx = p.x - b.x;
@@ -290,12 +290,12 @@ function drawBeaconPull(engine: RenderHost, ctx: CanvasRenderingContext2D) {
   }
 
   if (engine.pathPoints.length > 0) {
-    const scarAlpha = shifting ? 0.2 + pulse * 0.08 : 0.1 + pulse * 0.04;
+    const scarAlpha = shifting ? 0.42 + pulse * 0.12 : 0.28 + pulse * 0.1;
     ctx.fillStyle = `rgba(167, 139, 250, ${scarAlpha})`;
-    ctx.strokeStyle = `rgba(196, 181, 253, ${scarAlpha * 0.85})`;
+    ctx.strokeStyle = `rgba(196, 181, 253, ${Math.min(0.85, scarAlpha + 0.12)})`;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.lineWidth = 14;
+    ctx.lineWidth = 18;
 
     ctx.beginPath();
     let drawing = false;
@@ -321,9 +321,9 @@ function drawBeaconPull(engine: RenderHost, ctx: CanvasRenderingContext2D) {
     }
 
     ctx.strokeStyle = shifting
-      ? `rgba(196, 181, 253, ${0.2 + pulse * 0.08})`
-      : `rgba(196, 181, 253, ${0.09 + pulse * 0.04})`;
-    ctx.lineWidth = 1.15;
+      ? `rgba(196, 181, 253, ${0.42 + pulse * 0.12})`
+      : `rgba(196, 181, 253, ${0.28 + pulse * 0.1})`;
+    ctx.lineWidth = 2;
     ctx.setLineDash([3, 6]);
     for (const b of beacons) {
       let nearest = engine.pathPoints[0]!;
