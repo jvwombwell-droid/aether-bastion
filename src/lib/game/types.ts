@@ -269,6 +269,8 @@ export interface GameSnapshot {
   selectedTowerId: number | null;
   selectedKeep: boolean;
   keepFortify: number;
+  keepDoorGun: boolean;
+  keepWell: boolean;
   placement: PlacementMode;
   score: number;
   message: string | null;

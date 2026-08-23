@@ -309,7 +309,7 @@ describe("living keep", () => {
     const saved = a.exportRun();
     expect(saved).not.toBeNull();
     if (!saved) return;
-    expect(saved.version).toBe(2);
+    expect(saved.version).toBe(3);
     expect(saved.towers[0]?.role).toBe("watch");
 
     const b = new GameEngine();

@@ -32,6 +32,8 @@ import {
   wellIncome,
   MID_SHIFT_WAVE,
   KEEP_FORTIFY_LIVES,
+  KEEP_DOOR_GUN_COST,
+  KEEP_WELL_COST,
   MAX_KEEP_FORTIFY,
   upgradeCost,
 } from "@/lib/game/config";
@@ -55,6 +57,8 @@ const ROLE_LABEL: Record<TowerRole, string> = {
   watch: "Watch",
   well: "Well",
 };
+const KEEP_SHOP_BTN =
+  "flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle px-2 text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40";
 
 /** X/C cycle: inland battery/well → watch, inland watch → well, covering convert → battery. */
 function convertRoleForKey(t: { role: TowerRole; covering: boolean }): TowerRole {
@@ -481,6 +485,20 @@ export function TowerDefense() {
     pushSnap();
   };
 
+  const buyKeepDoorGun = () => {
+    if (engine.buyKeepDoorGun()) audio.beep(520, 0.08, "square", 0.04);
+    else audio.beep(140, 0.06);
+    persistNow();
+    pushSnap();
+  };
+
+  const buyKeepWell = () => {
+    if (engine.buyKeepWell()) audio.beep(520, 0.08, "square", 0.04);
+    else audio.beep(140, 0.06);
+    persistNow();
+    pushSnap();
+  };
+
   const togglePause = () => {
     engine.togglePause();
     persistNow();
@@ -516,6 +534,8 @@ export function TowerDefense() {
 
   const upCost = selected ? upgradeCost(selected.kind, selected.tier) : null;
   const fortifyCost = keepFortifyCost(snap.keepFortify);
+  const keepDoorGun = snap.keepDoorGun;
+  const keepWell = snap.keepWell;
   const waveDisplay =
     snap.wave >= snap.totalWaves ? snap.totalWaves : snap.wave + 1;
   const gameSpeed: GameSpeed = snap.gameSpeed ?? engine.gameSpeed ?? 1;
@@ -692,7 +712,7 @@ export function TowerDefense() {
                   ))}
                 </div>
                 <p className="mt-4 text-pretty text-[11px] text-fg-subtle">
-                  Keys: 1–4 build · Space wave · U upgrade · X/C convert inland · click keep to fortify · F
+                  Keys: 1–4 build · Space wave · U upgrade · X/C convert inland · click keep to upgrade · F
                   speed · T target · V turret cam · Esc pause
                 </p>
               </div>
@@ -864,7 +884,7 @@ export function TowerDefense() {
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold">The Bastion</p>
                       <p className="text-xs text-fg-muted">
-                        {snap.lives} lives · Fortify {snap.keepFortify}/{MAX_KEEP_FORTIFY}
+                        {snap.lives} lives · Walls {snap.keepFortify}/{MAX_KEEP_FORTIFY}
                       </p>
                     </div>
                     <img
@@ -878,21 +898,56 @@ export function TowerDefense() {
                   <p className="text-[11px] leading-snug text-fg-subtle">
                     The keep stays. The road moves around it.
                   </p>
-                  <button
-                    type="button"
-                    disabled={
-                      fortifyCost == null ||
-                      snap.gold < (fortifyCost ?? 0) ||
-                      snap.phase !== "playing"
-                    }
-                    onClick={fortifyKeep}
-                    className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-bg-subtle text-xs font-medium transition hover:bg-bg-elevated disabled:opacity-40 sm:mt-2.5"
-                  >
-                    <Shield className="size-3.5" />
-                    {fortifyCost == null
-                      ? "Max fortify"
-                      : `Fortify ${fortifyCost}g · +${KEEP_FORTIFY_LIVES} lives`}
-                  </button>
+                  <div className="mt-2 flex flex-col gap-1.5 sm:mt-2.5">
+                    <button
+                      type="button"
+                      aria-label="Thicker walls"
+                      disabled={
+                        fortifyCost == null ||
+                        snap.gold < (fortifyCost ?? 0) ||
+                        snap.phase !== "playing"
+                      }
+                      onClick={fortifyKeep}
+                      className={KEEP_SHOP_BTN}
+                    >
+                      <Shield className="size-3.5 shrink-0" />
+                      {fortifyCost == null
+                        ? "Walls maxed"
+                        : `Thicker walls ${fortifyCost}g · +${KEEP_FORTIFY_LIVES} lives`}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Door gun"
+                      disabled={
+                        keepDoorGun ||
+                        snap.gold < KEEP_DOOR_GUN_COST ||
+                        snap.phase !== "playing"
+                      }
+                      onClick={buyKeepDoorGun}
+                      className={KEEP_SHOP_BTN}
+                    >
+                      <Crosshair className="size-3.5 shrink-0" />
+                      {keepDoorGun
+                        ? "Door gun ready"
+                        : `Door gun ${KEEP_DOOR_GUN_COST}g · shoots the last stretch`}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Courtyard well"
+                      disabled={
+                        keepWell ||
+                        snap.gold < KEEP_WELL_COST ||
+                        snap.phase !== "playing"
+                      }
+                      onClick={buyKeepWell}
+                      className={KEEP_SHOP_BTN}
+                    >
+                      <Coins className="size-3.5 shrink-0" />
+                      {keepWell
+                        ? "Courtyard well ready"
+                        : `Courtyard well ${KEEP_WELL_COST}g · gold each wave`}
+                    </button>
+                  </div>
                 </>
               ) : selected ? (
                 <>
@@ -1290,8 +1345,8 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               The Keep
             </h4>
             <p className="text-xs leading-relaxed">
-              The Bastion is the corner keep. Click it, then Fortify with gold for extra lives.
-              The keep stays. The road always ends at its door.
+              The Bastion is the corner keep. Click it to upgrade: thicker walls, a door gun, or a
+              courtyard well. The keep stays. The road always ends at its door.
             </p>
           </section>
 
@@ -1315,7 +1370,7 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
               <li>
                 <strong className="text-fg">X</strong> / <strong className="text-fg">C</strong> —
                 convert the selected inland tower (battery → Watch → Well). Click the keep to
-                select it, then Fortify.
+                upgrade.
               </li>
               <li>
                 Between waves, a <strong className="text-fg">wave preview</strong> lists enemy

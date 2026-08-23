@@ -1,7 +1,7 @@
 import type { GameSpeed, TargetMode, TowerKind, TowerRole } from "./types";
 
 export const SAVE_KEY = "aether-bastion-run";
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 export type SavedPhase = "playing" | "paused" | "levelclear";
 
@@ -17,7 +17,7 @@ export interface SavedTower {
 }
 
 export interface SavedRun {
-  version: 2;
+  version: 3;
   nextId: number;
   runSeed: number;
   level: number;
@@ -33,6 +33,8 @@ export interface SavedRun {
   keepRow: number;
   midShiftDone: boolean;
   keepFortify: number;
+  keepDoorGun: boolean;
+  keepWell: boolean;
 }
 
 const TOWER_KINDS: readonly TowerKind[] = ["ember", "frost", "volt", "iron"];
@@ -97,7 +99,7 @@ function isSavedTower(value: unknown): value is SavedTower {
 
 export function parseSavedRun(data: unknown): SavedRun | null {
   if (!isRecord(data)) return null;
-  if (data.version !== SAVE_VERSION) return null;
+  if (data.version !== 2 && data.version !== 3) return null;
   if (typeof data.nextId !== "number" || !Number.isFinite(data.nextId)) return null;
   if (typeof data.runSeed !== "number" || !Number.isFinite(data.runSeed)) return null;
   if (typeof data.level !== "number" || !Number.isFinite(data.level)) return null;
@@ -115,8 +117,17 @@ export function parseSavedRun(data: unknown): SavedRun | null {
   if (typeof data.midShiftDone !== "boolean") return null;
   if (typeof data.keepFortify !== "number" || !Number.isFinite(data.keepFortify)) return null;
 
+  let keepDoorGun = false;
+  let keepWell = false;
+  if (data.version === 3) {
+    if (typeof data.keepDoorGun !== "boolean") return null;
+    if (typeof data.keepWell !== "boolean") return null;
+    keepDoorGun = data.keepDoorGun;
+    keepWell = data.keepWell;
+  }
+
   return {
-    version: 2,
+    version: 3,
     nextId: data.nextId,
     runSeed: data.runSeed,
     level: data.level,
@@ -132,6 +143,8 @@ export function parseSavedRun(data: unknown): SavedRun | null {
     keepRow: data.keepRow,
     midShiftDone: data.midShiftDone,
     keepFortify: data.keepFortify,
+    keepDoorGun,
+    keepWell,
   };
 }
 

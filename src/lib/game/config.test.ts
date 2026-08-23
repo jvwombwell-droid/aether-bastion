@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  KEEP_DOOR_GUN_COST,
+  KEEP_WELL_COST,
   SELL_REFUND,
   TOWERS,
+  keepDoorGunCost,
   keepFortifyCost,
   levelScale,
   sellRefundFor,
@@ -46,6 +49,12 @@ describe("living keep helpers", () => {
     expect(keepFortifyCost(0)).toBe(80);
     expect(keepFortifyCost(1)).toBe(150);
     expect(keepFortifyCost(2)).toBeNull();
+  });
+
+  it("keep door gun and well costs", () => {
+    expect(KEEP_DOOR_GUN_COST).toBe(90);
+    expect(KEEP_WELL_COST).toBe(75);
+    expect(keepDoorGunCost()).toBe(90);
   });
 });
 
