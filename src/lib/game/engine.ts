@@ -95,31 +95,56 @@ function towerCoversPath(
   return pathPoints.some((p) => dist2(t.x, t.y, p.x, p.y) <= r2);
 }
 
-function countPathCoverage(
-  towers: Array<Pick<Tower, "x" | "y" | "kind" | "tier" | "role">>,
-  pathPoints: Vec2[],
-): { covering: number; stranded: number } {
-  let covering = 0;
-  let stranded = 0;
+/** Batteries and watches push. Beacons pull. Wells do neither. Tile must be in `blocked`. */
+function roadBiasCells(
+  towers: Array<Pick<Tower, "col" | "row" | "role">>,
+  blocked: Array<[number, number]>,
+): { avoid: Array<[number, number]>; attract: Array<[number, number]> } {
+  const allowed = new Set(blocked.map(([c, r]) => `${c},${r}`));
+  const avoid: Array<[number, number]> = [];
+  const attract: Array<[number, number]> = [];
   for (const t of towers) {
-    if (towerCoversPath(t, pathPoints)) covering += 1;
-    else stranded += 1;
+    if (!allowed.has(`${t.col},${t.row}`)) continue;
+    const cell: [number, number] = [t.col, t.row];
+    if (t.role === "battery" || t.role === "watch") avoid.push(cell);
+    else if (t.role === "beacon") attract.push(cell);
   }
-  return { covering, stranded };
+  return { avoid, attract };
 }
 
-/** Higher tuple wins. Mixed covering+stranded outranks all-cover, which outranks none-cover. */
-function shiftCoverageScore(
-  covering: number,
-  stranded: number,
-  towerCount: number,
-): [number, number, number] {
-  if (towerCount <= 1) {
-    return [covering >= 1 ? 1 : 0, stranded, covering];
+/**
+ * Higher wins, left to right:
+ * a Battery or Watch still covers, then Beacons inside T1 battery range, then any inland gun.
+ * Inland is yes/no — more stranded is not better. Wells and Beacons are not guns.
+ */
+function shiftSeedScore(towers: ShiftTower[], pathPoints: Vec2[]): [number, number, number] {
+  const pull = towerRangeFor("ember", 1, "battery");
+  const pull2 = pull * pull;
+  let beacons = 0;
+  let gunCovers = false;
+  let gunInland = false;
+  let beaconsNear = 0;
+  for (const t of towers) {
+    if (t.role === "beacon") {
+      beacons += 1;
+      if (pathPoints.some((p) => dist2(t.x, t.y, p.x, p.y) <= pull2)) beaconsNear += 1;
+      continue;
+    }
+    if (t.role !== "battery" && t.role !== "watch") continue;
+    if (towerCoversPath(t, pathPoints)) gunCovers = true;
+    else gunInland = true;
   }
-  if (stranded >= 1 && covering >= 1) return [2, stranded, covering];
-  if (covering >= 1) return [1, stranded, covering];
-  return [0, stranded, covering];
+  return [gunCovers ? 1 : 0, beacons === 0 ? 0 : beaconsNear, gunInland ? 1 : 0];
+}
+
+function shiftScoreCeiling(towers: ShiftTower[]): [number, number, number] {
+  let guns = 0;
+  let beacons = 0;
+  for (const t of towers) {
+    if (t.role === "battery" || t.role === "watch") guns += 1;
+    else if (t.role === "beacon") beacons += 1;
+  }
+  return [guns > 0 ? 1 : 0, beacons, guns >= 2 ? 1 : 0];
 }
 
 function scoreBetter(a: [number, number, number], b: [number, number, number]): boolean {
@@ -128,38 +153,36 @@ function scoreBetter(a: [number, number, number], b: [number, number, number]): 
   return a[2] > b[2];
 }
 
-/** Pure: generate a candidate path and count covering/stranded without touching the live map. */
+/** Pure: candidate road for this seed. Avoid and attract are already role-split. */
 function evaluateShiftSeed(
   seed: number,
   blockedTowers: Array<[number, number]>,
   keep: KeepFootprint,
   towers: ShiftTower[],
-  attractCells: Array<[number, number]> = [],
-): { covering: number; stranded: number } {
-  const cells = generatePathCells(seed, blockedTowers, keep, blockedTowers, attractCells);
-  const points = pathCellsToPoints(cells);
-  return countPathCoverage(towers, points);
+  avoidCells: Array<[number, number]>,
+  attractCells: Array<[number, number]>,
+): [number, number, number] {
+  const cells = generatePathCells(seed, blockedTowers, keep, avoidCells, attractCells);
+  return shiftSeedScore(towers, pathCellsToPoints(cells));
 }
 
-/** Pick a path seed that strands someone when possible, without leaving the road uncovered. */
+/** Pick a road a gun still covers, that reaches Beacons, and that leaves a gun inland. */
 function pickFrontShiftSeed(seed0: number, keep: KeepFootprint, towers: ShiftTower[]): number {
   if (towers.length === 0) return seed0;
   const blocked: Array<[number, number]> = towers.map((t) => [t.col, t.row]);
-  const n = towers.length;
+  const { avoid, attract } = roadBiasCells(towers, blocked);
+  const ceiling = shiftScoreCeiling(towers);
   let bestSeed = seed0;
   let bestScore: [number, number, number] | null = null;
 
   for (let i = 0; i < FRONT_SHIFT_SEED_ATTEMPTS; i++) {
     const seed = (seed0 + i * FRONT_SHIFT_SEED_STRIDE) >>> 0;
-    const attract = towers.filter((t) => t.role === "beacon").map((t) => [t.col, t.row] as [number, number]);
-    const { covering, stranded } = evaluateShiftSeed(seed, blocked, keep, towers, attract);
-    const score = shiftCoverageScore(covering, stranded, n);
+    const score = evaluateShiftSeed(seed, blocked, keep, towers, avoid, attract);
     if (!bestScore || scoreBetter(score, bestScore)) {
       bestScore = score;
       bestSeed = seed;
     }
-    if (n === 1 && covering >= 1) break;
-    if (n >= 2 && covering >= 1 && stranded === n - 1) break;
+    if (score[0] === ceiling[0] && score[1] === ceiling[1] && score[2] === ceiling[2]) break;
   }
   return bestSeed;
 }
@@ -280,8 +303,8 @@ export class GameEngine {
     const keep = this.keepSpec();
     const seed = seedOverride ?? levelMapSeed(level, this.runSeed);
     const blockedAll = [...keep.cells, ...blocked];
-    const attract = this.towers.filter((t) => t.role === "beacon").map((t) => [t.col, t.row] as [number, number]);
-    this.pathCells = generatePathCells(seed, blockedAll, keep, blocked, attract);
+    const { avoid, attract } = roadBiasCells(this.towers, blocked);
+    this.pathCells = generatePathCells(seed, blockedAll, keep, avoid, attract);
     this.pathPoints = pathCellsToPoints(this.pathCells);
     this.pathLengths = buildPathLengthsFromPoints(this.pathPoints);
     this.pathTotal = this.pathLengths[this.pathLengths.length - 1] ?? 1;

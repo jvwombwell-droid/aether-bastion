@@ -46,7 +46,8 @@ export const KEEP_FORTIFY_LIVES = 2;
 export const KEEP_DOOR_GUN_COST = 90;
 export const KEEP_DOOR_MAX_TIER = 3;
 export const KEEP_WELL_COST = 75;
-export const BEACON_PULL = 18;
+/** How hard a Beacon pulls the next road. Bigger than edge wobble (~1–6). */
+export const BEACON_PULL = 36;
 
 /** Damage multipliers: tower element → enemy armor. */
 export const MATCHUP: Record<Element, Record<Element, number>> = {

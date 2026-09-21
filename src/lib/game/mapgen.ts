@@ -1,4 +1,4 @@
-import { CELL, COLS, ROWS, cellCenter, towerRangeFor } from "./config";
+import { BEACON_PULL, CELL, COLS, ROWS, cellCenter, towerRangeFor } from "./config";
 
 /** Mulberry32 seeded PRNG — deterministic per level seed. */
 export function makeRng(seed: number) {
@@ -80,7 +80,7 @@ const T1_BATTERY_RANGE2 = T1_BATTERY_RANGE * T1_BATTERY_RANGE;
 /** Per covering tower. Stacks, so a cluster is much more expensive than one gun. */
 const AVOID_CELL_COST = 16;
 /** Per beacon. Negative so Dijkstra prefers cells near a Beacon. */
-const ATTRACT_CELL_COST = -18;
+const ATTRACT_CELL_COST = -BEACON_PULL;
 const NO_AVOID: Map<string, number> = new Map();
 
 /**
@@ -192,12 +192,16 @@ function windyPath(
 
   type Node = { k: string; c: number; r: number; d: number };
   const open: Node[] = [{ k: sk, c: start[0], r: start[1], d: 0 }];
+  // Beacon discounts are negative. Settle on first pop so that cannot cycle.
+  const settled = new Set<string>();
 
   while (open.length) {
     open.sort((a, b) => a.d - b.d);
     const cur = open.shift()!;
-    if (cur.k === gk) break;
+    if (settled.has(cur.k)) continue;
     if ((dist.get(cur.k) ?? Infinity) < cur.d) continue;
+    settled.add(cur.k);
+    if (cur.k === gk) break;
 
     const neigh = DIRS.slice();
     shuffleInPlace(neigh, rng);
@@ -206,7 +210,7 @@ function windyPath(
       const nr = cur.r + dr;
       if (!inBounds(nc, nr)) continue;
       const nk = key(nc, nr);
-      if (blocked.has(nk)) continue;
+      if (blocked.has(nk) || settled.has(nk)) continue;
       const nd = cur.d + edgeCost(cur.k, nk) + (avoidCost.get(nk) ?? 0);
       if (nd < (dist.get(nk) ?? Infinity)) {
         dist.set(nk, nd);
@@ -288,7 +292,8 @@ function coverageBounds(blocked: Set<string>) {
 /**
  * Highly randomized path that never crosses permanent tower cells.
  * Covers at most 30% of available tiles. Spawn/base on varying edges.
- * `avoidCells` (tower tiles) make nearby cells expensive so the road can miss a cluster.
+ * `avoidCells` (batteries and watches) make nearby cells expensive so the road can miss them.
+ * `attractCells` (beacons) pull. Blocked cells stay unwalkable.
  */
 export function generatePathCells(
   seed: number,
