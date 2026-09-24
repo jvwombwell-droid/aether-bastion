@@ -615,6 +615,12 @@ export function TowerDefense() {
   const gameSpeed: GameSpeed = snap.gameSpeed ?? engine.gameSpeed ?? 1;
   const nextPreview: WavePreview | null = snap.nextWavePreview ?? null;
   const selectedTargetMode: TargetMode = selected?.targetMode ?? "first";
+  const emptyBoard =
+    snap.phase === "playing" &&
+    !snap.waveActive &&
+    snap.wave < snap.totalWaves &&
+    !snap.shiftHold &&
+    engine.towers.length === 0;
 
   return (
     <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-bg pt-[var(--grok-banner-h,0px)] text-fg">
@@ -891,7 +897,12 @@ export function TowerDefense() {
 
         {snap.phase !== "menu" && (
           <aside className="flex max-h-[42dvh] min-h-0 shrink-0 flex-col gap-1.5 overflow-y-auto border-t border-border bg-bg-elevated p-2 sm:gap-2 sm:p-3 lg:h-full lg:max-h-none lg:w-[300px] lg:border-t-0 lg:border-l">
-            <div className="flex items-center gap-2">
+            <div className={emptyBoard ? "flex flex-col gap-1.5" : "flex items-center gap-2"}>
+              {emptyBoard ? (
+                <p className="flex min-h-10 w-full items-center justify-center rounded-[var(--radius-sm)] bg-accent px-2 py-1.5 text-center text-sm font-semibold leading-snug text-accent-fg">
+                  Tap a tower, then tap the grass beside the road.
+                </p>
+              ) : null}
               {snap.phase === "levelclear" ? (
                 <button
                   type="button"
@@ -909,7 +920,11 @@ export function TowerDefense() {
                     snap.wave >= snap.totalWaves
                   }
                   onClick={startWave}
-                  className="flex h-10 flex-1 items-center justify-center gap-2 rounded-[var(--radius-sm)] bg-accent text-sm font-semibold text-accent-fg transition hover:opacity-90 disabled:opacity-40 active:scale-[0.98]"
+                  className={
+                    emptyBoard
+                      ? "flex h-10 w-full items-center justify-center gap-2 rounded-[var(--radius-sm)] border border-border bg-bg-elevated text-sm font-semibold text-fg transition hover:opacity-90 disabled:opacity-40 active:scale-[0.98]"
+                      : "flex h-10 flex-1 items-center justify-center gap-2 rounded-[var(--radius-sm)] bg-accent text-sm font-semibold text-accent-fg transition hover:opacity-90 disabled:opacity-40 active:scale-[0.98]"
+                  }
                 >
                   {snap.waveActive
                     ? `L${snap.level} W${snap.wave + 1} — ${snap.enemiesRemaining} left`
@@ -952,6 +967,7 @@ export function TowerDefense() {
                   const cost = def.tiers[0]!.cost;
                   const active = snap.placement === kind;
                   const canAfford = snap.gold >= cost;
+                  const affordOpen = emptyBoard && canAfford && !active;
                   return (
                     <button
                       key={kind}
@@ -959,8 +975,10 @@ export function TowerDefense() {
                       aria-label={`Build ${def.name} for ${cost} gold`}
                       disabled={snap.phase !== "playing"}
                       onClick={() => pickTower(kind)}
+                      style={affordOpen ? { borderColor: def.color } : undefined}
                       className={[
-                        "flex min-h-11 flex-col items-start justify-center rounded-[var(--radius-sm)] border px-2 py-1.5 text-left transition sm:py-2",
+                        "flex min-h-11 flex-col items-start justify-center rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition sm:py-2",
+                        affordOpen ? "border-2" : "border",
                         active
                           ? "border-fg bg-bg-subtle"
                           : "border-border bg-bg hover:border-border-strong",

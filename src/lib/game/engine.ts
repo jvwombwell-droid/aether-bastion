@@ -18,7 +18,6 @@ import {
   levelScale,
   scaleWavesForLevel,
   upgradeCost,
-  MATCHUP_HINT,
   KEEP_DOOR_GUN_COST,
   KEEP_DOOR_MAX_TIER,
   KEEP_FORTIFY_LIVES,
@@ -43,7 +42,7 @@ import {
   pickKeepOrigin,
   type KeepFootprint,
 } from "./mapgen";
-import { combatRulesFor, damageMultiplier } from "./combat";
+import { combatRulesFor, damageMultiplier, hitCallout } from "./combat";
 import type { SavedRun, SavedTower } from "./persist";
 import { renderGame } from "./render";
 import type {
@@ -1127,29 +1126,31 @@ export class GameEngine {
     opts?: { slow?: number; fromX?: number; fromY?: number },
   ) {
     if (!enemy.alive) return;
-    const mul = damageMultiplier(element, enemy, combatRulesFor(levelScript(this.level).rule));
+    const rules = combatRulesFor(levelScript(this.level).rule);
+    const mul = damageMultiplier(element, enemy, rules);
     const dmg = Math.max(1, Math.round(raw * mul));
     enemy.hp -= dmg;
     enemy.hitFlash = 0.12;
     enemy.hitFlashColor = TOWERS[element].color;
-    const isStrong = mul >= 1.4;
-    const isWeak = mul <= 0.65;
+    const call = hitCallout(element, enemy, rules);
+    const strong = call.tone === "strong";
+    const weak = call.tone === "weak";
     this.floats.push({
       x: enemy.x + (Math.random() * 8 - 4),
       y: enemy.y - enemy.radius - 4,
-      text: isStrong ? `${dmg}!` : isWeak ? `${dmg}` : `${dmg}`,
-      color: isStrong ? "#f4f4f5" : isWeak ? "#71717a" : TOWERS[element].color,
+      text: strong ? `${dmg}!` : `${dmg}`,
+      color: strong ? "#f4f4f5" : weak ? "#71717a" : TOWERS[element].color,
       life: 0.7,
       maxLife: 0.7,
       vy: -28,
     });
-    if (this.matchupTeachCd <= 0 && (isStrong || isWeak)) {
+    if (this.matchupTeachCd <= 0 && call.text !== "") {
       this.matchupTeachCd = 1.35;
       this.floats.push({
         x: enemy.x,
         y: enemy.y - enemy.radius - 18,
-        text: isStrong ? MATCHUP_HINT[element] : "RESIST",
-        color: isStrong ? TOWERS[element].color : "#71717a",
+        text: call.text,
+        color: call.tone === "weak" ? "#71717a" : TOWERS[element].color,
         life: 1.05,
         maxLife: 1.05,
         vy: -18,

@@ -614,13 +614,6 @@ export function upgradeCost(kind: Element, currentTier: number): number | null {
 export const MATCHUP_MANTRA =
   "Ember melts Frost · Frost freezes Volt · Volt shocks Ember & Iron · Iron cracks armor";
 
-export const MATCHUP_HINT: Record<Element, string> = {
-  ember: "EMBER > FROST",
-  frost: "FROST > VOLT",
-  volt: "VOLT > EMBER",
-  iron: "IRON shreds all",
-};
-
 export function cellCenter(col: number, row: number) {
   return { x: col * CELL + CELL / 2, y: row * CELL + CELL / 2 };
 }

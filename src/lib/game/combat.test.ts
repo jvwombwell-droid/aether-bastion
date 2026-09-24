@@ -3,6 +3,7 @@ import { MATCHUP } from "./config";
 import {
   combatRulesFor,
   damageMultiplier,
+  hitCallout,
   DEFAULT_COMBAT_RULES,
   THICK_HIDE_CAP,
 } from "./combat";
@@ -117,6 +118,67 @@ describe("damageMultiplier", () => {
     const e = enemy({ armor: "ember", buffs: [buff("ward")] });
     expect(damageMultiplier("volt", e)).toBe(MATCHUP.volt.ember);
     expect(damageMultiplier("volt", e)).toBe(1.85);
+  });
+});
+
+describe("hitCallout", () => {
+  it("Volt vs iron with Expose includes VOLT > IRON and Expose", () => {
+    const call = hitCallout("volt", enemy({ armor: "iron", buffs: [buff("expose")] }));
+    expect(call.text).toContain("VOLT > IRON");
+    expect(call.text).toContain("Expose");
+    expect(call.text).not.toContain("EMBER");
+    expect(call.tone).toBe("strong");
+  });
+
+  it("Volt vs iron with Fortify is VOLT > IRON · Fortify", () => {
+    const call = hitCallout("volt", enemy({ armor: "iron", buffs: [buff("fortify")] }));
+    expect(call.text).toBe("VOLT > IRON · Fortify");
+    expect(call.tone).toBe("neutral");
+  });
+
+  it("thick hide Volt vs iron is RESIST · Thick hide", () => {
+    const call = hitCallout("volt", enemy({ armor: "iron", buffs: [] }), {
+      thickHide: true,
+      wardedNight: false,
+    });
+    expect(call.text).toBe("RESIST · Thick hide");
+    expect(call.tone).toBe("weak");
+  });
+
+  it("warded night Volt vs ember ward is VOLT > EMBER · Ward", () => {
+    const call = hitCallout("volt", enemy({ armor: "ember", buffs: [buff("ward")] }), {
+      thickHide: false,
+      wardedNight: true,
+    });
+    expect(call.text).toBe("VOLT > EMBER · Ward");
+    expect(call.tone).toBe("neutral");
+  });
+
+  it("default rules omit Ward on super-effective Volt vs ember", () => {
+    const call = hitCallout("volt", enemy({ armor: "ember", buffs: [buff("ward")] }));
+    expect(call.text).toBe("VOLT > EMBER");
+    expect(call.text).not.toContain("Ward");
+    expect(call.tone).toBe("strong");
+  });
+
+  it("Iron vs frost Frail is only Frail", () => {
+    const call = hitCallout("iron", enemy({ armor: "frost", buffs: [buff("frail")] }));
+    expect(call.text).toBe("Frail");
+    expect(call.tone).toBe("strong");
+    expect(call.text.toLowerCase()).not.toContain("shred");
+    expect(call.text).not.toContain("IRON");
+  });
+
+  it("Ember vs frost is EMBER > FROST", () => {
+    const call = hitCallout("ember", enemy({ armor: "frost", buffs: [] }));
+    expect(call.text).toBe("EMBER > FROST");
+    expect(call.tone).toBe("strong");
+  });
+
+  it("Ember vs ember Shred is only Shred", () => {
+    const call = hitCallout("ember", enemy({ armor: "ember", buffs: [buff("shred")] }));
+    expect(call.text).toBe("Shred");
+    expect(call.tone).toBe("neutral");
   });
 });
 

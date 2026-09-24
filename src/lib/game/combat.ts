@@ -1,4 +1,4 @@
-import { BUFFS, MATCHUP } from "./config";
+import { BUFFS, ELEMENT_LABEL, MATCHUP } from "./config";
 import type { LevelRule } from "./levels";
 import type { BuffId, Element, Enemy } from "./types";
 
@@ -67,4 +67,52 @@ export function damageMultiplier(
     }
   }
   return mul;
+}
+
+export type HitTone = "strong" | "weak" | "neutral";
+
+export interface HitCallout {
+  text: string;
+  tone: HitTone;
+}
+
+export function hitCallout(
+  element: Element,
+  enemy: Enemy,
+  rules: CombatRules = DEFAULT_COMBAT_RULES,
+): HitCallout {
+  const folded = damageMultiplier(element, enemy, rules);
+  const chart = MATCHUP[element][enemy.armor];
+  const tone: HitTone = folded >= 1.4 ? "strong" : folded <= 0.65 ? "weak" : "neutral";
+  const has = (id: BuffId) => enemy.buffs.some((b) => b.id === id);
+  const exposed = has("expose");
+  const reasons: string[] = [];
+
+  if (rules.thickHide && !has("shred") && enemy.armor === "iron" && chart > THICK_HIDE_CAP) {
+    reasons.push("Thick hide");
+  }
+
+  const ward = BUFFS.ward;
+  const superEffective = chart >= 1.4;
+  const wardHolds = !superEffective || (rules.wardedNight && !exposed);
+  if (has("ward") && ward.resistElements?.includes(element) && ward.resistMul && wardHolds) {
+    reasons.push("Ward");
+  }
+
+  if (has("fortify")) reasons.push("Fortify");
+  if (has("shred")) reasons.push("Shred");
+  if (exposed && chart >= 1.4) reasons.push("Expose");
+  if (has("frail")) reasons.push("Frail");
+
+  const picked = reasons.slice(0, 2);
+  let lead = "";
+  if (folded <= 0.65) lead = "RESIST";
+  else if (chart >= 1.4) {
+    lead = `${ELEMENT_LABEL[element].toUpperCase()} > ${ELEMENT_LABEL[enemy.armor].toUpperCase()}`;
+  } else if (folded >= 1.4) lead = picked[0] ?? "STRONG";
+
+  const parts = [lead, ...picked.filter((r) => r.toLowerCase() !== lead.toLowerCase())].filter(
+    (part) => part.length > 0,
+  );
+  return { text: parts.join(" · "), tone };
 }

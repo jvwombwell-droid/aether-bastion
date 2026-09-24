@@ -9,8 +9,8 @@ import {
   keepDoorStats,
   towerRangeFor,
 } from "./config";
-import { damageMultiplier } from "./combat";
-import { reconBoardLine } from "./levels";
+import { combatRulesFor, hitCallout } from "./combat";
+import { levelScript, reconBoardLine } from "./levels";
 import type { KeepFootprint } from "./mapgen";
 import { enemySprite, getSprite, towerSprite } from "./sprites";
 import type {
@@ -651,7 +651,8 @@ function drawPlacementGhost(
   ctx.globalAlpha = ok ? 0.7 : 0.35;
   const spr = towerSprite(engine.placement);
   if (spr) {
-    ctx.drawImage(spr, Math.round(pos.x - 18), Math.round(pos.y - 22), 36, 36);
+    const { h } = containedSpriteSize(spr, 56);
+    drawContainedSprite(ctx, spr, pos.x, pos.y - h * 0.15, 56);
   } else {
     ctx.fillStyle = ok ? def.color : "#c45c5c";
     ctx.beginPath();
@@ -663,12 +664,19 @@ function drawPlacementGhost(
 
 function drawTower(engine: RenderHost, ctx: CanvasRenderingContext2D, t: Tower, selected: boolean) {
   const def = TOWERS[t.kind];
+  const longSide = 64 + (t.tier - 1) * 4;
+  const art = t.role === "well" ? getSprite("well") : towerSprite(t.kind);
+  const fit = art ? containedSpriteSize(art, longSide) : null;
+  const ring = fit ? Math.max(fit.w, fit.h) * 0.48 : 0;
+  const lanternY = fit ? -fit.h / 2 + 6 : -16;
+
   ctx.save();
   ctx.translate(t.x, t.y);
 
   ctx.fillStyle = "rgba(0,0,0,0.35)";
   ctx.beginPath();
-  ctx.ellipse(0, 16, 12, 5, 0, 0, Math.PI * 2);
+  if (fit) ctx.ellipse(0, fit.h / 2 - 2, Math.max(10, fit.w * 0.28), 5, 0, 0, Math.PI * 2);
+  else ctx.ellipse(0, 16, 12, 5, 0, 0, Math.PI * 2);
   ctx.fill();
 
   if (engine.frontShift > 0 || engine.shiftHold || !t.covering) {
@@ -681,70 +689,69 @@ function drawTower(engine: RenderHost, ctx: CanvasRenderingContext2D, t: Tower, 
       : `rgba(212, 160, 64, ${0.4 + pulse * 0.45})`;
     ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.arc(0, 0, 21 + pulse * 3, 0, Math.PI * 2);
+    ctx.arc(0, 0, (fit ? ring : 21) + pulse * 3, 0, Math.PI * 2);
     ctx.stroke();
   }
 
-  if (t.role === "watch") drawWatchGlow(engine, ctx);
+  if (t.role === "watch") drawWatchGlow(engine, ctx, lanternY);
   if (t.role === "beacon") drawBeaconGlow(engine, ctx);
 
-  const sprite = towerSprite(t.kind);
   if (t.role === "well") {
-    drawWellTower(ctx, t);
+    drawWellTower(ctx, longSide);
+  } else if (art) {
+    drawOutlinedSprite(ctx, art, 0, 0, longSide);
   } else {
-    if (sprite) {
-      const s = 38 + t.tier * 2;
-      ctx.drawImage(sprite, Math.round(-s / 2), Math.round(-s / 2 - 4), s, s);
-    } else {
-      ctx.fillStyle = def.color;
-      ctx.beginPath();
-      ctx.arc(0, 0, 10, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (t.role === "watch") drawWatchLantern(ctx);
+    ctx.fillStyle = def.color;
+    ctx.beginPath();
+    ctx.arc(0, 0, 10, 0, Math.PI * 2);
+    ctx.fill();
   }
+
+  if (t.role === "watch") drawWatchLantern(ctx, lanternY);
 
   if (selected) {
     ctx.strokeStyle = "#f4f4f5";
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(0, 0, 20, 0, Math.PI * 2);
+    ctx.arc(0, 0, fit ? ring : 20, 0, Math.PI * 2);
     ctx.stroke();
   }
 
+  const labelY = fit ? fit.h / 2 + 10 : 24;
   if (t.role === "well") {
     ctx.fillStyle = "rgba(212,176,80,0.95)";
     ctx.font = "700 8px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("WELL", 0, 24);
+    ctx.fillText("WELL", 0, labelY);
   } else if (t.role === "beacon") {
     ctx.fillStyle = "rgba(196,160,220,0.95)";
     ctx.font = "700 8px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("BEACON", 0, 24);
+    ctx.fillText("BEACON", 0, labelY);
   } else if (t.role === "watch") {
     ctx.fillStyle = "rgba(160,200,220,0.95)";
     ctx.font = "700 8px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("WATCH", 0, 24);
+    ctx.fillText("WATCH", 0, labelY);
   } else if (!t.covering) {
     ctx.fillStyle = "rgba(212,160,64,0.95)";
     ctx.font = "700 8px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("INLAND", 0, 24);
+    ctx.fillText("INLAND", 0, labelY);
   }
 
   ctx.restore();
 
+  const pipY = t.y + (fit ? fit.h / 2 + 18 : 20);
   ctx.save();
   for (let i = 0; i < t.tier; i++) {
     ctx.fillStyle = def.color;
     ctx.beginPath();
-    ctx.arc(t.x - 8 + i * 8, t.y + 20, 2.2, 0, Math.PI * 2);
+    ctx.arc(t.x - 8 + i * 8, pipY, 2.2, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -763,40 +770,40 @@ function drawBeaconGlow(engine: RenderHost, ctx: CanvasRenderingContext2D) {
 }
 
 /** Cool watch-light, not Ember orange. */
-function drawWatchGlow(engine: RenderHost, ctx: CanvasRenderingContext2D) {
+function drawWatchGlow(engine: RenderHost, ctx: CanvasRenderingContext2D, lanternY = -16) {
+  const y = lanternY + 4;
   const pulse = 0.5 + 0.5 * Math.sin(engine.animTime * 2.6);
-  const glow = ctx.createRadialGradient(0, -12, 2, 0, -10, 28);
+  const glow = ctx.createRadialGradient(0, y, 2, 0, y + 2, 28);
   glow.addColorStop(0, `rgba(220, 230, 255, ${0.4 + pulse * 0.14})`);
   glow.addColorStop(0.45, `rgba(160, 190, 220, ${0.16 + pulse * 0.08})`);
   glow.addColorStop(1, "rgba(160, 190, 220, 0)");
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.ellipse(0, -12, 14, 22, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, y, 14, 22, 0, 0, Math.PI * 2);
   ctx.fill();
 }
 
 /** Small lantern on the crown — not a 22px lamp-post sticker. */
-function drawWatchLantern(ctx: CanvasRenderingContext2D) {
+function drawWatchLantern(ctx: CanvasRenderingContext2D, centerY = -16) {
   ctx.fillStyle = "rgba(236, 232, 210, 0.95)";
   ctx.beginPath();
-  ctx.moveTo(0, -22);
-  ctx.lineTo(5, -16);
-  ctx.lineTo(0, -11);
-  ctx.lineTo(-5, -16);
+  ctx.moveTo(0, centerY - 6);
+  ctx.lineTo(5, centerY);
+  ctx.lineTo(0, centerY + 5);
+  ctx.lineTo(-5, centerY);
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle = "rgba(180, 210, 240, 0.9)";
   ctx.beginPath();
-  ctx.arc(0, -16, 3.2, 0, Math.PI * 2);
+  ctx.arc(0, centerY, 3.2, 0, Math.PI * 2);
   ctx.fill();
 }
 
 /** Well replaces the gun. */
-function drawWellTower(ctx: CanvasRenderingContext2D, t: Tower) {
+function drawWellTower(ctx: CanvasRenderingContext2D, longSide: number) {
   const overlay = getSprite("well");
   if (overlay) {
-    const s = 36 + t.tier * 2;
-    ctx.drawImage(overlay, Math.round(-s / 2), Math.round(-s / 2 + 1), s, s);
+    drawOutlinedSprite(ctx, overlay, 0, 0, longSide);
     return;
   }
   ctx.fillStyle = "#6e685c";
@@ -820,6 +827,13 @@ function enemySpriteSize(e: Enemy): number {
   return e.radius * 3.3;
 }
 
+function containedSpriteSize(sprite: HTMLImageElement, box: number): { w: number; h: number } {
+  const iw = sprite.naturalWidth || box;
+  const ih = sprite.naturalHeight || box;
+  const scale = Math.min(box / iw, box / ih);
+  return { w: iw * scale, h: ih * scale };
+}
+
 /** Fit sprite in a box without squashing tall or square art. */
 function drawContainedSprite(
   ctx: CanvasRenderingContext2D,
@@ -827,13 +841,37 @@ function drawContainedSprite(
   x: number,
   y: number,
   box: number,
-) {
-  const iw = sprite.naturalWidth || box;
-  const ih = sprite.naturalHeight || box;
-  const scale = Math.min(box / iw, box / ih);
-  const w = iw * scale;
-  const h = ih * scale;
+): { w: number; h: number } {
+  const { w, h } = containedSpriteSize(sprite, box);
   ctx.drawImage(sprite, Math.round(x - w / 2), Math.round(y - h / 2), w, h);
+  return { w, h };
+}
+
+function drawOutlinedSprite(
+  ctx: CanvasRenderingContext2D,
+  sprite: HTMLImageElement,
+  x: number,
+  y: number,
+  longSide: number,
+): { w: number; h: number } {
+  ctx.save();
+  let edge = true;
+  try {
+    ctx.filter = "brightness(0)";
+  } catch {
+    edge = false;
+  }
+  if (edge) {
+    ctx.globalAlpha = 0.85;
+    for (const ox of [-2, 0, 2]) {
+      for (const oy of [-2, 0, 2]) {
+        if (ox === 0 && oy === 0) continue;
+        drawContainedSprite(ctx, sprite, x + ox, y + oy, longSide);
+      }
+    }
+  }
+  ctx.restore();
+  return drawContainedSprite(ctx, sprite, x, y, longSide);
 }
 
 function drawEnemy(engine: RenderHost, ctx: CanvasRenderingContext2D, e: Enemy) {
@@ -1397,13 +1435,14 @@ function drawFpv(
 
   if (tracked) {
     const ed = ENEMIES[tracked.kind];
-    const mul = damageMultiplier(cam.kind, tracked);
-    const tag = mul >= 1.4 ? "STRONG" : mul <= 0.65 ? "RESIST" : "HIT";
+    const call = hitCallout(cam.kind, tracked, combatRulesFor(levelScript(engine.level).rule));
+    const tag = call.text !== "" ? call.text : "HIT";
     ctx.textAlign = "right";
     ctx.fillStyle = "#e4e4e7";
     ctx.font = "600 12px Segoe UI, sans-serif";
     ctx.fillText(ed.name, vw - 16, vh - 28);
-    ctx.fillStyle = mul >= 1.4 ? "#5a9e6f" : mul <= 0.65 ? "#c45c5c" : def.color;
+    ctx.fillStyle =
+      call.tone === "strong" ? "#5a9e6f" : call.tone === "weak" ? "#c45c5c" : def.color;
     ctx.font = "700 11px Segoe UI, sans-serif";
     ctx.fillText(`${tag}  ${Math.round(tracked.hp)}/${tracked.maxHp}`, vw - 16, vh - 12);
   } else {
